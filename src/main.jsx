@@ -5,8 +5,7 @@ import {
   GraduationCap, ShieldCheck, ToggleLeft, ToggleRight, Upload,
   Newspaper, Microscope, Map, LogIn, LogOut, UserRound,
   Download, PlayCircle, Headphones, Mail, Phone, MapPin, ExternalLink,
-  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save,
-  KeyRound
+  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from './supabaseClient';
@@ -214,7 +213,6 @@ function App(){
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Detect password recovery link
   useEffect(() => {
     const hash = window.location.hash || '';
     const search = window.location.search || '';
@@ -526,7 +524,7 @@ function App(){
             {meta?.name || 'Loading...'}
           </span>
         </div>
-        
+
         <button className="logout-nav-btn" onClick={logout}>
           <LogOut size={16}/> Logout
         </button>
@@ -3339,9 +3337,6 @@ function CoursesPage({ courses, search, setSearch, yearFilter, setYearFilter, se
   );
 }
 
-// ============================================
-// LOGIN MODAL (with Forgot Password link)
-// ============================================
 function LoginModal({ close, doLogin, onForgotPassword }) {
   const [type, setType] = useState('student');
   const [email, setEmail] = useState('');
@@ -3436,9 +3431,6 @@ function LoginModal({ close, doLogin, onForgotPassword }) {
   );
 }
 
-// ============================================
-// FORGOT PASSWORD MODAL
-// ============================================
 function ForgotPasswordModal({ onClose, onBackToLogin }) {
   const [type, setType] = useState('student');
   const [email, setEmail] = useState('');
@@ -3561,9 +3553,6 @@ function ForgotPasswordModal({ onClose, onBackToLogin }) {
   );
 }
 
-// ============================================
-// RESET PASSWORD MODAL (after email link)
-// ============================================
 function ResetPasswordModal({ onDone, onCancel }) {
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
@@ -3662,9 +3651,6 @@ function ResetPasswordModal({ onDone, onCancel }) {
   );
 }
 
-// ============================================
-// CHANGE PASSWORD MODAL (logged-in users)
-// ============================================
 function ChangePasswordModal({ onClose, onSuccess }) {
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
@@ -3691,7 +3677,6 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 
     const email = userData.user.email;
 
-    // Verify current password using an isolated client (no session bleed)
     const { createClient } = await import('@supabase/supabase-js');
     const url = import.meta?.env?.VITE_SUPABASE_URL || supabase.supabaseUrl;
     const key = import.meta?.env?.VITE_SUPABASE_ANON_KEY || supabase.supabaseKey;
@@ -3713,7 +3698,6 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 
     await tempClient.auth.signOut();
 
-    // Update password on the main session
     const { error: updErr } = await supabase.auth.updateUser({ password: newPw });
     setBusy(false);
 
@@ -3824,6 +3808,10 @@ function ExamSystem({ user, meta }) {
   const [courseName, setCourseName] = useState('');
   const [examType, setExamType] = useState('Midterm');
   const [targetYear, setTargetYear] = useState(2);
+  const [totalMark, setTotalMark] = useState(100);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkError, setBulkError] = useState('');
   const [currentExam, setCurrentExam] = useState(null);
   const [qIndex, setQIndex] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -3861,15 +3849,128 @@ function ExamSystem({ user, meta }) {
   const updQ = (id, f, v) => setQuestions(questions.map(q => q.id === id ? { ...q, [f]: v } : q));
   const updC = (qid, ci, v) => setQuestions(questions.map(q => q.id === qid ? { ...q, choices: q.choices.map((c, i) => i === ci ? v : c) } : q));
 
+  // ============================================
+  // BULK IMPORT PARSER
+  // ============================================
+  const parseBulkQuestions = (text) => {
+    const questions = [];
+    const errors = [];
+
+    const lines = text
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    let current = null;
+
+    const letterToIndex = (letter) => {
+      const c = (letter || '').trim().toUpperCase().charAt(0);
+      const idx = c.charCodeAt(0) - 65;
+      return idx >= 0 && idx <= 25 ? idx : -1;
+    };
+
+    const pushCurrent = () => {
+      if (!current) return;
+      if (!current.text) {
+        errors.push('A question has no text.');
+        current = null;
+        return;
+      }
+      if (current.choices.length < 2) {
+        errors.push(`Question "${current.text.slice(0, 40)}..." has fewer than 2 choices.`);
+        current = null;
+        return;
+      }
+      if (!current.correctAnswer) {
+        errors.push(`Question "${current.text.slice(0, 40)}..." is missing the Answer line.`);
+        current = null;
+        return;
+      }
+      questions.push(current);
+      current = null;
+    };
+
+    for (const line of lines) {
+      const answerMatch = line.match(/^(?:answer|ans|correct|correct answer)\s*[:\-–]\s*([A-Za-z])/i);
+      if (answerMatch && current) {
+        const idx = letterToIndex(answerMatch[1]);
+        if (idx >= 0 && idx < current.choices.length) {
+          current.correctAnswer = current.choices[idx];
+        } else {
+          errors.push(`Answer "${answerMatch[1]}" does not match any choice in question "${current.text.slice(0, 40)}..."`);
+        }
+        continue;
+      }
+
+      const choiceMatch = line.match(/^([A-Za-z])\s*[\)\.\-–:]\s*(.+)$/);
+      if (choiceMatch && current && current.choices.length < 6) {
+        current.choices.push(choiceMatch[2].trim());
+        continue;
+      }
+
+      const questionMatch = line.match(/^(?:Q\s*)?(\d+)\s*[\)\.\-–:]\s*(.+)$/i);
+      if (questionMatch) {
+        pushCurrent();
+        current = {
+          id: Date.now() + Math.random(),
+          text: questionMatch[2].trim(),
+          choices: [],
+          correctAnswer: '',
+          points: 1
+        };
+        continue;
+      }
+
+      if (current && current.choices.length === 0) {
+        current.text += ' ' + line;
+        continue;
+      }
+    }
+
+    pushCurrent();
+    questions.forEach((q, i) => { q.id = i + 1; });
+
+    return { questions, errors };
+  };
+
+  const handleBulkImport = () => {
+    setBulkError('');
+    const { questions: parsed, errors } = parseBulkQuestions(bulkText);
+
+    if (errors.length > 0) {
+      setBulkError(
+        'Some questions had problems:\n\n' +
+        errors.slice(0, 5).join('\n') +
+        (errors.length > 5 ? `\n...and ${errors.length - 5} more` : '')
+      );
+      return;
+    }
+
+    if (parsed.length === 0) {
+      setBulkError('No questions detected. Make sure each question starts with "1.", "2.", etc.');
+      return;
+    }
+
+    setQuestions(parsed);
+    setBulkOpen(false);
+    setBulkText('');
+    setShowForm(true);
+    alert(`✅ Imported ${parsed.length} question${parsed.length > 1 ? 's' : ''}! Review and edit below, then click Create.`);
+  };
+
   const saveExam = async () => {
     if (!title.trim()) return alert('Enter exam title.');
     if (!courseCode.trim()) return alert('Enter course code.');
     if (!courseName.trim()) return alert('Enter course name.');
     if (!targetYear) return alert('Choose target year.');
+    if (!totalMark || totalMark < 1) return alert('Enter a valid total mark.');
     const row = {
       title: title.trim(), duration, released: false, questions,
       course_code: courseCode.trim(), course_name: courseName.trim(),
       exam_type: examType, target_year: targetYear, user_id: user.id,
+      total_mark: totalMark,
     };
     if (editingId) await supabase.from('exams').update(row).eq('id', editingId);
     else await supabase.from('exams').insert([row]);
@@ -3881,6 +3982,7 @@ function ExamSystem({ user, meta }) {
     setTitle(''); setQuestions([{ id: 1, text: '', choices: ['','','',''], correctAnswer: '', points: 1 }]);
     setEditingId(null); setShowForm(false);
     setCourseCode(''); setCourseName(''); setExamType('Midterm'); setTargetYear(2);
+    setTotalMark(100);
   };
 
   const editE = (e) => {
@@ -3891,6 +3993,7 @@ function ExamSystem({ user, meta }) {
     setCourseName(e.course_name || '');
     setExamType(e.exam_type || 'Midterm');
     setTargetYear(e.target_year || 2);
+    setTotalMark(e.total_mark || 100);
     setShowForm(true);
   };
 
@@ -3979,6 +4082,7 @@ function ExamSystem({ user, meta }) {
       student: meta?.name, student_id: meta?.student_id, student_year: meta?.year,
       course_code: currentExam.course_code, course_name: currentExam.course_name,
       exam_type: currentExam.exam_type,
+      total_mark: currentExam.total_mark || 100,
       score: pct, correct, total, wrong, unanswered,
       total_points: totalPts, earned_points: earned,
       grade, status, time_taken: timeTaken, attempt_number: attempt,
@@ -4013,6 +4117,7 @@ function ExamSystem({ user, meta }) {
       'Course Name': r.course_name || '',
       'Exam Title': r.exam_title || '',
       'Exam Date': r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : '',
+      'Total Mark': r.total_mark || 100,
       'Total Questions': r.total || 0,
       'Correct Answers': r.correct || 0,
       'Wrong Answers': r.wrong || 0,
@@ -4029,9 +4134,9 @@ function ExamSystem({ user, meta }) {
     const worksheet = XLSX.utils.json_to_sheet(rows);
     worksheet['!cols'] = [
       { wch: 4 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 28 },
-      { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 },
-      { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
-      { wch: 20 }
+      { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+      { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 12 },
+      { wch: 10 }, { wch: 20 }
     ];
     const workbook = XLSX.utils.book_new();
     const sheetName = filterYear === 'all' ? 'All Results' : `Year ${filterYear}`;
@@ -4047,7 +4152,7 @@ function ExamSystem({ user, meta }) {
       <div style={{ marginTop: '30px', background: 'white', padding: '25px', borderRadius: '12px' }}>
         <h3>{currentExam.title}</h3>
         <p style={{ color: '#66788a' }}>
-          {currentExam.course_code} — {currentExam.course_name} • {currentExam.exam_type}
+          {currentExam.course_code} — {currentExam.course_name} • {currentExam.exam_type} • Total Mark: {currentExam.total_mark || '—'}
         </p>
         <p>Q {qIndex+1}/{currentExam.questions.length} • ⏱️ {fmt(timeLeft)}</p>
         <p style={{ fontSize: '18px' }}>{q.text}</p>
@@ -4096,14 +4201,151 @@ function ExamSystem({ user, meta }) {
         <>
           {isStaff && (
             <div>
-              <button className="primary" onClick={()=>setShowForm(!showForm)} style={{marginBottom:'20px'}}>
-                {showForm ? '📕 Close' : '📝 Create Exam'}
-              </button>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                <button className="primary" onClick={()=>setShowForm(!showForm)}>
+                  {showForm ? '📕 Close Exam Form' : '📝 Create Exam'}
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => { setBulkOpen(!bulkOpen); setBulkError(''); }}
+                  style={{ background: bulkOpen ? '#dc3545' : '#17a2b8', color: 'white', border: 'none' }}
+                >
+                  {bulkOpen ? '📕 Close Bulk Import' : '📋 Bulk Import Questions'}
+                </button>
+              </div>
+
+              {bulkOpen && (
+                <div style={{
+                  background: 'linear-gradient(135deg, #eaf4fb, #ffffff)',
+                  padding: '22px',
+                  borderRadius: '12px',
+                  marginBottom: '25px',
+                  border: '2px solid #17a2b8'
+                }}>
+                  <h3 style={{ marginTop: 0, color: '#102a43' }}>📋 Paste Exam Questions</h3>
+                  <p style={{ color: '#66788a', fontSize: '13px', marginBottom: '14px', lineHeight: '1.6' }}>
+                    Paste your full exam below. Use this format:
+                  </p>
+                  <pre style={{
+                    background: '#102a43',
+                    color: '#e1b84b',
+                    padding: '14px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    lineHeight: '1.6',
+                    overflowX: 'auto',
+                    marginBottom: '14px'
+                  }}>{`1. What is the hardest mineral?
+A) Quartz
+B) Diamond
+C) Topaz
+D) Corundum
+Answer: B
+
+2. Chemical formula of quartz?
+A) SiO2
+B) NaCl
+C) CaCO3
+Answer: A`}</pre>
+
+                  <p style={{ color: '#66788a', fontSize: '12px', marginBottom: '14px' }}>
+                    ✓ Questions: <code>1.</code> <code>2.</code> <code>Q1.</code> <code>Q1)</code><br/>
+                    ✓ Choices: <code>A)</code> <code>A.</code> <code>a)</code> (2–5 choices)<br/>
+                    ✓ Answer: <code>Answer: B</code> or <code>Ans: B</code> or <code>Correct: B</code>
+                  </p>
+
+                  {bulkError && (
+                    <div style={{
+                      background: '#f8d7da',
+                      color: '#721c24',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      marginBottom: '14px',
+                      fontSize: '13px',
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: 'monospace'
+                    }}>
+                      {bulkError}
+                    </div>
+                  )}
+
+                  <textarea
+                    value={bulkText}
+                    onChange={(e) => setBulkText(e.target.value)}
+                    rows="14"
+                    placeholder={`Paste your exam questions here...\n\nExample:\n1. What is the hardest mineral?\nA) Quartz\nB) Diamond\nC) Topaz\nD) Corundum\nAnswer: B`}
+                    style={{
+                      width: '100%',
+                      padding: '14px',
+                      borderRadius: '8px',
+                      border: '1px solid #ccc',
+                      fontFamily: 'monospace',
+                      fontSize: '13px',
+                      lineHeight: '1.6',
+                      resize: 'vertical'
+                    }}
+                  />
+
+                  <div style={{ marginTop: '14px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <button
+                      className="primary"
+                      onClick={handleBulkImport}
+                      disabled={!bulkText.trim()}
+                      style={{ background: '#28a745' }}
+                    >
+                      ✅ Parse & Import
+                    </button>
+                    <button
+                      className="secondary"
+                      onClick={() => { setBulkText(''); setBulkError(''); }}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setBulkText(
+`1. What is the hardest mineral on Earth?
+A) Quartz
+B) Diamond
+C) Topaz
+D) Corundum
+Answer: B
+
+2. What is the chemical formula of quartz?
+A) SiO2
+B) NaCl
+C) CaCO3
+D) FeS2
+Answer: A
+
+3. Which era is known as the "Age of Reptiles"?
+A) Paleozoic
+B) Mesozoic
+C) Cenozoic
+D) Precambrian
+Answer: B
+
+4. What type of rock is formed from cooled magma?
+A) Sedimentary
+B) Metamorphic
+C) Igneous
+D) Clastic
+Answer: C`
+                        );
+                        setBulkError('');
+                      }}
+                    >
+                      📄 Load Sample
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {showForm && (
                 <div style={{background:'#f8f9fa',padding:'20px',borderRadius:'12px',marginBottom:'20px'}}>
                   <h3>New Exam</h3>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
                     <div>
                       <label style={{fontSize:'13px',fontWeight:'600'}}>Exam Title</label>
                       <input type="text" value={title} onChange={e=>setTitle(e.target.value)}
@@ -4117,6 +4359,17 @@ function ExamSystem({ user, meta }) {
                         <option>Midterm</option><option>Final</option><option>Quiz</option>
                         <option>Assignment</option><option>Practical</option>
                       </select>
+                    </div>
+                    <div>
+                      <label style={{fontSize:'13px',fontWeight:'600'}}>Total Mark</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={totalMark}
+                        onChange={e=>setTotalMark(parseInt(e.target.value)||0)}
+                        placeholder="e.g. 100"
+                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}
+                      />
                     </div>
                     <div>
                       <label style={{fontSize:'13px',fontWeight:'600'}}>Course Code</label>
@@ -4179,6 +4432,7 @@ function ExamSystem({ user, meta }) {
                       <strong>{e.title}</strong> {e.released?'✅ Released':'🔒 Draft'}
                       <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
                         {e.course_code} — {e.course_name} • {e.exam_type} • Year {e.target_year}
+                        {e.total_mark ? ` • Total Mark: ${e.total_mark}` : ''}
                       </p>
                     </div>
                     <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
@@ -4206,7 +4460,7 @@ function ExamSystem({ user, meta }) {
                 <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
                   <strong>{e.title}</strong>
                   <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
-                    {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min
+                    {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
                   </p>
                   <button className="primary" onClick={()=>startExam(e)} style={{marginTop:'8px'}}>Start Exam</button>
                 </div>
@@ -4250,7 +4504,7 @@ function ExamSystem({ user, meta }) {
                 </p>
               ) : (
                 <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2000px' : '1400px'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2100px' : '1500px'}}>
                     <thead>
                       <tr style={{background:'#102a43',color:'white'}}>
                         <th style={{padding:'8px',textAlign:'left'}}>#</th>
@@ -4261,6 +4515,7 @@ function ExamSystem({ user, meta }) {
                         <th style={{padding:'8px',textAlign:'left'}}>Course Name</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Exam Title</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Date</th>
+                        <th style={{padding:'8px',textAlign:'center'}}>Total Mark</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Total Q</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Correct</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Wrong</th>
@@ -4286,6 +4541,7 @@ function ExamSystem({ user, meta }) {
                           <td style={{padding:'8px'}}>{r.course_name || '—'}</td>
                           <td style={{padding:'8px'}}>{r.exam_title}</td>
                           <td style={{padding:'8px'}}>{r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : '—'}</td>
+                          <td style={{padding:'8px',textAlign:'center'}}>{r.total_mark ?? '—'}</td>
                           <td style={{padding:'8px',textAlign:'center'}}>{r.total}</td>
                           <td style={{padding:'8px',textAlign:'center',color:'#28a745'}}>{r.correct}</td>
                           <td style={{padding:'8px',textAlign:'center',color:'#dc3545'}}>{r.wrong}</td>
