@@ -5,7 +5,8 @@ import {
   GraduationCap, ShieldCheck, ToggleLeft, ToggleRight, Upload,
   Newspaper, Microscope, Map, LogIn, LogOut, UserRound,
   Download, PlayCircle, Headphones, Mail, Phone, MapPin, ExternalLink,
-  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save
+  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save,
+  KeyRound
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from './supabaseClient';
@@ -186,6 +187,8 @@ function App(){
   const [semesterFilter,setSemesterFilter]=useState("all");
   const [activeFilter,setActiveFilter]=useState("all");
   const [loginOpen,setLoginOpen]=useState(false);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
   const [materials, setMaterials] = useState({});
   const [newsItems, setNewsItems] = useState([]);
   const [publications, setPublications] = useState([]);
@@ -207,6 +210,26 @@ function App(){
       setUser(session?.user ?? null);
       if (session?.user) loadMeta(session.user.id);
       else { setMeta(null); setProfilePic(null); passwordCheckDone.current = false; }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // Detect password recovery link
+  useEffect(() => {
+    const hash = window.location.hash || '';
+    const search = window.location.search || '';
+    const isRecovery =
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery');
+
+    if (isRecovery) {
+      setResetPasswordOpen(true);
+    }
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setResetPasswordOpen(true);
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -389,9 +412,6 @@ function App(){
     setMaterials(prev => ({ ...prev, [courseId]: list.map(m => m.id === materialId ? { ...m, locked: !m.locked } : m) }));
   };
 
-  // ============================================
-  // DELETE MATERIAL (NEW)
-  // ============================================
   const deleteMaterial = async (courseId, materialId) => {
     if (meta?.role !== 'staff') return;
     const list = materials[courseId] || [];
@@ -400,7 +420,6 @@ function App(){
 
     if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return;
 
-    // Try to remove the file from storage
     try {
       const url = item.url || '';
       const bucketMarker = '/object/public/materials/';
@@ -508,6 +527,26 @@ function App(){
           </span>
         </div>
 
+        <button
+          onClick={() => setShowPasswordChange(true)}
+          title="Change your password"
+          style={{
+            background: 'transparent',
+            color: 'white',
+            border: '1px solid rgba(255,255,255,0.4)',
+            padding: '6px 12px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontSize: '13px',
+            marginRight: '6px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          <KeyRound size={14} /> Password
+        </button>
+
         <button className="logout-nav-btn" onClick={logout}>
           <LogOut size={16}/> Logout
         </button>
@@ -555,7 +594,48 @@ function App(){
         user={user}
         meta={meta}
       />}
-      {loginOpen && <LoginModal close={() => setLoginOpen(false)} doLogin={doLogin}/>}
+      {loginOpen && (
+        <LoginModal
+          close={() => setLoginOpen(false)}
+          doLogin={doLogin}
+          onForgotPassword={() => {
+            setLoginOpen(false);
+            setForgotPasswordOpen(true);
+          }}
+        />
+      )}
+      {forgotPasswordOpen && (
+        <ForgotPasswordModal
+          onClose={() => setForgotPasswordOpen(false)}
+          onBackToLogin={() => {
+            setForgotPasswordOpen(false);
+            setLoginOpen(true);
+          }}
+        />
+      )}
+      {resetPasswordOpen && (
+        <ResetPasswordModal
+          onDone={() => {
+            setResetPasswordOpen(false);
+            window.history.replaceState(null, '', window.location.pathname);
+            alert('✅ Password reset successful! You can now log in.');
+            setLoginOpen(true);
+          }}
+          onCancel={() => {
+            setResetPasswordOpen(false);
+            window.history.replaceState(null, '', window.location.pathname);
+          }}
+        />
+      )}
+      {showPasswordChange && user && (
+        <ChangePasswordModal
+          onClose={() => setShowPasswordChange(false)}
+          onSuccess={() => {
+            setShowPasswordChange(false);
+            alert('✅ Password changed successfully!');
+          }}
+        />
+      )}
 
       <footer>
         <div><div className="logo small">DMU</div><h3>Department of Geology</h3><p>Debre Markos University</p></div>
@@ -3279,7 +3359,10 @@ function CoursesPage({ courses, search, setSearch, yearFilter, setYearFilter, se
   );
 }
 
-function LoginModal({ close, doLogin }) {
+// ============================================
+// LOGIN MODAL (with Forgot Password link)
+// ============================================
+function LoginModal({ close, doLogin, onForgotPassword }) {
   const [type, setType] = useState('student');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
@@ -3304,10 +3387,24 @@ function LoginModal({ close, doLogin }) {
         <button className="close" onClick={close}><X/></button>
         <h2>Portal Login</h2>
         <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-          <button className={type === 'student' ? 'primary' : 'secondary'} onClick={() => { setType('student'); setErr(''); }} style={{ flex: 1 }}>Student</button>
-          <button className={type === 'staff' ? 'primary' : 'secondary'} onClick={() => { setType('staff'); setErr(''); }} style={{ flex: 1 }}>Staff</button>
+          <button
+            className={type === 'student' ? 'primary' : 'secondary'}
+            onClick={() => { setType('student'); setErr(''); }}
+            style={{ flex: 1 }}
+          >Student</button>
+          <button
+            className={type === 'staff' ? 'primary' : 'secondary'}
+            onClick={() => { setType('staff'); setErr(''); }}
+            style={{ flex: 1 }}
+          >Staff</button>
         </div>
-        {err && <div style={{ background: '#f8d7da', color: '#721c24', padding: '10px', borderRadius: '6px', marginBottom: '10px' }}>{err}</div>}
+
+        {err && (
+          <div style={{ background: '#f8d7da', color: '#721c24', padding: '10px', borderRadius: '6px', marginBottom: '10px' }}>
+            {err}
+          </div>
+        )}
+
         <label>{type === 'student' ? 'Username' : 'Email'}</label>
         <input
           type={type === 'student' ? 'text' : 'email'}
@@ -3316,6 +3413,7 @@ function LoginModal({ close, doLogin }) {
           placeholder={type === 'student' ? 'Enter your username' : 'Enter your email'}
           style={{ width: '100%', padding: '10px', marginBottom: '8px', border: '1px solid #ccc', borderRadius: '6px' }}
         />
+
         <label>Password</label>
         <input
           type="password"
@@ -3325,14 +3423,410 @@ function LoginModal({ close, doLogin }) {
           placeholder="Password"
           style={{ width: '100%', padding: '10px', marginBottom: '10px', border: '1px solid #ccc', borderRadius: '6px' }}
         />
+
         <button className="primary full" onClick={submit} disabled={busy}>
           {busy ? 'Logging in...' : 'Login'}
         </button>
+
+        <div style={{ textAlign: 'center', marginTop: '12px' }}>
+          <button
+            onClick={onForgotPassword}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#1769aa',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: '600',
+              padding: 0
+            }}
+          >
+            🔑 Forgot Password?
+          </button>
+        </div>
+
         <p style={{ fontSize: '12px', color: '#66788a', marginTop: '10px', textAlign: 'center' }}>
-         {type === 'student'
-         ? 'Use your username (e.g. asefa.y). Default password: student123'
-          : 'Use your registered email address. Default password: staff123'}
-      </p>
+          {type === 'student'
+            ? 'Use your username (e.g. asefa.y). Default password: student123'
+            : 'Use your registered email address. Default password: staff123'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// FORGOT PASSWORD MODAL
+// ============================================
+function ForgotPasswordModal({ onClose, onBackToLogin }) {
+  const [type, setType] = useState('student');
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async () => {
+    setErr('');
+
+    const raw = email.trim();
+    if (!raw) { setErr('Please enter your email.'); return; }
+    if (!raw.includes('@')) { setErr('Please enter a valid email address.'); return; }
+
+    setBusy(true);
+
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(raw, {
+      redirectTo
+    });
+
+    setBusy(false);
+
+    if (error) {
+      setErr(error.message || 'Could not send reset email.');
+      return;
+    }
+    setSent(true);
+  };
+
+  return (
+    <div className="modalBackdrop" onClick={onClose}>
+      <div className="modal login" onClick={e => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+        <button className="close" onClick={onClose}><X/></button>
+
+        <h2 style={{ margin: '0 0 6px' }}>🔑 Forgot Password</h2>
+        <p style={{ color: '#66788a', fontSize: '13px', margin: '0 0 16px' }}>
+          Enter your email and we'll send you a secure link to reset your password.
+        </p>
+
+        {sent ? (
+          <>
+            <div style={{
+              background: '#d4edda', color: '#155724',
+              padding: '14px', borderRadius: '8px',
+              marginBottom: '16px', fontSize: '14px', lineHeight: '1.6'
+            }}>
+              ✅ <strong>Reset link sent!</strong>
+              <br />
+              Check your inbox (and spam folder) for an email from Supabase.
+              Click the link inside to set a new password.
+            </div>
+            <button className="primary full" onClick={onBackToLogin} style={{ marginBottom: '8px' }}>
+              ← Back to Login
+            </button>
+            <button className="secondary full" onClick={onClose}>
+              Close
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+              <button
+                className={type === 'student' ? 'primary' : 'secondary'}
+                onClick={() => { setType('student'); setErr(''); }}
+                style={{ flex: 1 }}
+              >Student</button>
+              <button
+                className={type === 'staff' ? 'primary' : 'secondary'}
+                onClick={() => { setType('staff'); setErr(''); }}
+                style={{ flex: 1 }}
+              >Staff</button>
+            </div>
+
+            {err && (
+              <div style={{
+                background: '#f8d7da', color: '#721c24',
+                padding: '10px', borderRadius: '6px',
+                marginBottom: '12px', fontSize: '13px'
+              }}>{err}</div>
+            )}
+
+            <label style={{ fontWeight: '600', fontSize: '13px' }}>Email Address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyPress={e => e.key === 'Enter' && submit()}
+              placeholder={type === 'student' ? 'yourname@student.dmu.edu.et' : 'name@dmu.edu.et'}
+              style={{
+                width: '100%', padding: '10px',
+                margin: '5px 0 16px',
+                border: '1px solid #ccc', borderRadius: '8px'
+              }}
+            />
+
+            <button
+              className="primary full"
+              onClick={submit}
+              disabled={busy}
+              style={{ marginBottom: '8px' }}
+            >
+              {busy ? 'Sending...' : '📧 Send Reset Link'}
+            </button>
+
+            <button className="secondary full" onClick={onBackToLogin}>
+              ← Back to Login
+            </button>
+
+            <p style={{ fontSize: '12px', color: '#66788a', marginTop: '12px', textAlign: 'center' }}>
+              {type === 'student'
+                ? 'Students: enter your full email address (e.g. asefa.y@student.dmu.edu.et)'
+                : 'Staff: enter your university email address.'}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// RESET PASSWORD MODAL (after email link)
+// ============================================
+function ResetPasswordModal({ onDone, onCancel }) {
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError('');
+    if (newPw.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    if (newPw !== confirmPw) { setError('Passwords do not match.'); return; }
+
+    setBusy(true);
+    const { error: err } = await supabase.auth.updateUser({ password: newPw });
+    setBusy(false);
+
+    if (err) { setError(err.message); return; }
+    onDone();
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0,
+      background: 'linear-gradient(135deg, #102a43, #1769aa)',
+      zIndex: 99999,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '20px'
+    }}>
+      <div style={{
+        background: 'white', borderRadius: '14px',
+        padding: '34px', maxWidth: '460px', width: '100%',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: '18px' }}>
+          <ShieldCheck size={48} color="#e1b84b" />
+          <h2 style={{ margin: '10px 0 5px', color: '#102a43' }}>🔐 Set New Password</h2>
+          <p style={{ color: '#66788a', fontSize: '14px', margin: 0 }}>
+            Choose a new password for your account.
+          </p>
+        </div>
+
+        {error && (
+          <div style={{
+            background: '#f8d7da', color: '#721c24',
+            padding: '10px', borderRadius: '6px',
+            marginBottom: '14px', fontSize: '13px'
+          }}>{error}</div>
+        )}
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>New Password (min. 6 chars)</label>
+        <input
+          type="password"
+          value={newPw}
+          onChange={e => setNewPw(e.target.value)}
+          placeholder="Enter new password"
+          autoComplete="new-password"
+          style={{
+            width: '100%', padding: '10px',
+            margin: '5px 0 14px',
+            border: '1px solid #ccc', borderRadius: '8px'
+          }}
+        />
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>Confirm New Password</label>
+        <input
+          type="password"
+          value={confirmPw}
+          onChange={e => setConfirmPw(e.target.value)}
+          onKeyPress={e => e.key === 'Enter' && submit()}
+          placeholder="Re-enter new password"
+          autoComplete="new-password"
+          style={{
+            width: '100%', padding: '10px',
+            margin: '5px 0 22px',
+            border: '1px solid #ccc', borderRadius: '8px'
+          }}
+        />
+
+        <button
+          className="primary full"
+          onClick={submit}
+          disabled={busy}
+          style={{ marginBottom: '10px', padding: '12px' }}
+        >
+          {busy ? 'Saving...' : '✅ Set New Password'}
+        </button>
+
+        <button
+          className="secondary full"
+          onClick={onCancel}
+          style={{ padding: '12px' }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// CHANGE PASSWORD MODAL (logged-in users)
+// ============================================
+function ChangePasswordModal({ onClose, onSuccess }) {
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError('');
+
+    if (!currentPw) { setError('Enter your current password.'); return; }
+    if (newPw.length < 6) { setError('New password must be at least 6 characters.'); return; }
+    if (newPw !== confirmPw) { setError('New passwords do not match.'); return; }
+    if (newPw === currentPw) { setError('New password must differ from current.'); return; }
+
+    setBusy(true);
+
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user?.email) {
+      setBusy(false);
+      setError('Session expired. Please log out and log in again.');
+      return;
+    }
+
+    const email = userData.user.email;
+
+    // Verify current password using an isolated client (no session bleed)
+    const { createClient } = await import('@supabase/supabase-js');
+    const url = import.meta?.env?.VITE_SUPABASE_URL || supabase.supabaseUrl;
+    const key = import.meta?.env?.VITE_SUPABASE_ANON_KEY || supabase.supabaseKey;
+
+    const tempClient = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+
+    const { error: verifyErr } = await tempClient.auth.signInWithPassword({
+      email,
+      password: currentPw
+    });
+
+    if (verifyErr) {
+      setBusy(false);
+      setError('Current password is incorrect.');
+      return;
+    }
+
+    await tempClient.auth.signOut();
+
+    // Update password on the main session
+    const { error: updErr } = await supabase.auth.updateUser({ password: newPw });
+    setBusy(false);
+
+    if (updErr) {
+      setError(updErr.message || 'Could not update password.');
+      return;
+    }
+
+    onSuccess();
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(5,19,32,0.75)',
+        zIndex: 99999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '20px'
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '14px',
+          padding: '30px', maxWidth: '460px', width: '100%',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+        }}
+      >
+        <h2 style={{ margin: '0 0 5px', color: '#102a43' }}>🔒 Change Password</h2>
+        <p style={{ color: '#66788a', fontSize: '13px', margin: '0 0 20px' }}>
+          Enter your current password, then choose a new one.
+        </p>
+
+        {error && (
+          <div style={{
+            background: '#f8d7da', color: '#721c24',
+            padding: '10px', borderRadius: '6px',
+            marginBottom: '14px', fontSize: '13px'
+          }}>
+            {error}
+          </div>
+        )}
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>Current Password</label>
+        <input
+          type="password"
+          value={currentPw}
+          onChange={e => setCurrentPw(e.target.value)}
+          placeholder="Enter current password"
+          autoComplete="current-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }}
+        />
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>New Password (min. 6 chars)</label>
+        <input
+          type="password"
+          value={newPw}
+          onChange={e => setNewPw(e.target.value)}
+          placeholder="Enter new password"
+          autoComplete="new-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }}
+        />
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>Confirm New Password</label>
+        <input
+          type="password"
+          value={confirmPw}
+          onChange={e => setConfirmPw(e.target.value)}
+          onKeyPress={e => e.key === 'Enter' && submit()}
+          placeholder="Re-enter new password"
+          autoComplete="new-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 20px', border: '1px solid #ccc', borderRadius: '8px' }}
+        />
+
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button
+            className="primary"
+            onClick={submit}
+            disabled={busy}
+            style={{ flex: 1, background: '#28a745', padding: '11px' }}
+          >
+            {busy ? 'Saving...' : '✅ Change Password'}
+          </button>
+          <button
+            className="secondary"
+            onClick={onClose}
+            style={{ flex: 1, padding: '11px' }}
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -3605,9 +4099,6 @@ function ExamSystem({ user, meta }) {
     );
   }
 
-  // ═══════════════════════════════════════════════════════
-  // FIX #1: Students see only their own exam results
-  // ═══════════════════════════════════════════════════════
   const filteredResults = useMemo(() => {
     if (isStudent) {
       return results.filter(r => r.user_id === user.id);
@@ -3750,7 +4241,6 @@ function ExamSystem({ user, meta }) {
                 alignItems:'center', flexWrap:'wrap', gap:'10px',
                 marginBottom:'15px'
               }}>
-                {/* FIX #1: Different heading for students vs staff */}
                 <h3 style={{margin:0}}>
                   {isStudent ? '📊 My Exam Results' : '📊 Exam Results'} ({filteredResults.length})
                 </h3>
@@ -3784,7 +4274,6 @@ function ExamSystem({ user, meta }) {
                     <thead>
                       <tr style={{background:'#102a43',color:'white'}}>
                         <th style={{padding:'8px',textAlign:'left'}}>#</th>
-                        {/* FIX #1: Hide student name/ID columns for students */}
                         {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student Name</th>}
                         {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student ID</th>}
                         {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Year</th>}
@@ -3892,9 +4381,6 @@ function StudentPortal({ user, meta, courses, navigate, setSelectedCourse }) {
   );
 }
 
-// ============================================
-// COURSE MODAL — with DELETE button (FIX #3)
-// ============================================
 function CourseModal({ course, close, uploadMaterial, materials, toggleLock, deleteMaterial, user, meta }) {
   const [file, setFile] = useState(null);
   const [category, setCategory] = useState('Lecture Notes');
@@ -3938,7 +4424,6 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, del
                 Log in to download
               </span>
             )}
-            {/* FIX #3: Delete button for course materials */}
             {isStaff && user.id === m.user_id && (
               <button
                 onClick={() => deleteMaterial(course.id, m.id)}
@@ -3967,9 +4452,6 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, del
   );
 }
 
-// ============================================
-// STAFF COMPONENT (with Change Password — FIX #2)
-// ============================================
 function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leadership, setLeadership }) {
   const isStaff = meta?.role === 'staff';
   const [allStaff, setAllStaff] = useState([]);
@@ -3977,7 +4459,6 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
   const [selectedStaff, setSelectedStaff] = useState(null);
   const [editing, setEditing] = useState(false);
   const [showLeadership, setShowLeadership] = useState(false);
-  const [showPwChange, setShowPwChange] = useState(false);
   const [details, setDetails] = useState({
     bio: '', phone: '', office: '', achievements: []
   });
@@ -4114,20 +4595,10 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
             <h2 style={{ margin: 0, color: '#102a43' }}>👤 My Staff Profile</h2>
-            {/* FIX #2: Add Change Password button */}
             {!editing ? (
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button className="primary" onClick={() => setEditing(true)}>
-                  ✏️ Edit Profile
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => setShowPwChange(true)}
-                  style={{ color: '#1769aa', borderColor: '#1769aa' }}
-                >
-                  🔒 Change Password
-                </button>
-              </div>
+              <button className="primary" onClick={() => setEditing(true)}>
+                ✏️ Edit Profile
+              </button>
             ) : (
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="primary" onClick={saveDetails} disabled={busy} style={{ background: '#28a745' }}>
@@ -4330,114 +4801,7 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
           onClose={() => setSelectedStaff(null)}
         />
       )}
-
-      {/* FIX #2: Change Password modal */}
-      {showPwChange && (
-        <ChangePasswordModal
-          onClose={() => setShowPwChange(false)}
-          onSuccess={() => {
-            setShowPwChange(false);
-            alert('✅ Password changed successfully!');
-          }}
-        />
-      )}
     </Page>
-  );
-}
-
-// ============================================
-// CHANGE PASSWORD MODAL (FIX #2)
-// ============================================
-function ChangePasswordModal({ onClose, onSuccess }) {
-  const [currentPw, setCurrentPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [confirmPw, setConfirmPw] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    setError('');
-    if (!currentPw) { setError('Enter your current password.'); return; }
-    if (newPw.length < 6) { setError('New password must be at least 6 characters.'); return; }
-    if (newPw !== confirmPw) { setError('New passwords do not match.'); return; }
-    if (newPw === currentPw) { setError('New password must differ from current.'); return; }
-
-    setBusy(true);
-
-    const { data: { user: me } } = await supabase.auth.getUser();
-    if (!me?.email) { setBusy(false); setError('Session expired. Please log in again.'); return; }
-
-    const { error: signInErr } = await supabase.auth.signInWithPassword({
-      email: me.email,
-      password: currentPw
-    });
-    if (signInErr) { setBusy(false); setError('Current password is incorrect.'); return; }
-
-    const { error: updErr } = await supabase.auth.updateUser({ password: newPw });
-    setBusy(false);
-    if (updErr) { setError(updErr.message); return; }
-
-    onSuccess();
-  };
-
-  return (
-    <div className="modalBackdrop" onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(5,19,32,0.75)',
-      zIndex: 9999, display: 'flex', alignItems: 'center',
-      justifyContent: 'center', padding: '20px'
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background: 'white', borderRadius: '14px',
-        padding: '30px', maxWidth: '460px', width: '100%',
-        boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
-      }}>
-        <h2 style={{ margin: '0 0 5px', color: '#102a43' }}>🔒 Change Password</h2>
-        <p style={{ color: '#66788a', fontSize: '13px', margin: '0 0 20px' }}>
-          Enter your current password, then choose a new one.
-        </p>
-
-        {error && (
-          <div style={{
-            background: '#f8d7da', color: '#721c24',
-            padding: '10px', borderRadius: '6px',
-            marginBottom: '14px', fontSize: '13px'
-          }}>{error}</div>
-        )}
-
-        <label style={{ fontWeight: '600', fontSize: '13px' }}>Current Password</label>
-        <input type="password" value={currentPw}
-          onChange={e => setCurrentPw(e.target.value)}
-          placeholder="Enter current password"
-          autoComplete="current-password"
-          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }} />
-
-        <label style={{ fontWeight: '600', fontSize: '13px' }}>New Password (min. 6 chars)</label>
-        <input type="password" value={newPw}
-          onChange={e => setNewPw(e.target.value)}
-          placeholder="Enter new password"
-          autoComplete="new-password"
-          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }} />
-
-        <label style={{ fontWeight: '600', fontSize: '13px' }}>Confirm New Password</label>
-        <input type="password" value={confirmPw}
-          onChange={e => setConfirmPw(e.target.value)}
-          onKeyPress={e => e.key === 'Enter' && submit()}
-          placeholder="Re-enter new password"
-          autoComplete="new-password"
-          style={{ width: '100%', padding: '10px', margin: '5px 0 20px', border: '1px solid #ccc', borderRadius: '8px' }} />
-
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="primary" onClick={submit} disabled={busy}
-            style={{ flex: 1, background: '#28a745', padding: '11px' }}>
-            {busy ? 'Saving...' : '✅ Change Password'}
-          </button>
-          <button className="secondary" onClick={onClose}
-            style={{ flex: 1, padding: '11px' }}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
