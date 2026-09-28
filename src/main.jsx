@@ -526,27 +526,7 @@ function App(){
             {meta?.name || 'Loading...'}
           </span>
         </div>
-
-        <button
-          onClick={() => setShowPasswordChange(true)}
-          title="Change your password"
-          style={{
-            background: 'transparent',
-            color: 'white',
-            border: '1px solid rgba(255,255,255,0.4)',
-            padding: '6px 12px',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            fontSize: '13px',
-            marginRight: '6px',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '5px'
-          }}
-        >
-          <KeyRound size={14} /> Password
-        </button>
-
+        
         <button className="logout-nav-btn" onClick={logout}>
           <LogOut size={16}/> Logout
         </button>
