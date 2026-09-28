@@ -1,60 +1,37 @@
-# Debre Markos University – Department of Geology Portal
+# DMU Geology Department Portal
 
-## Version 1
+Official web portal for the **Department of Geology** at **Debre Markos University**, Ethiopia.
 
-This is a frontend prototype for the Department of Geology academic portal.
+🌐 **Live site:** [https://dmugeo.vercel.app](https://dmugeo.vercel.app)
 
-### Included
-- University/department academic interface
-- Responsive homepage
-- About, academics, students, staff, research, activities, resources, and news pages
-- 100 sample geology courses
-- Course Active/Inactive toggle in Admin Dashboard
-- Year 1–4 student organization
-- Student portal showing active courses for the student's academic year
-- Demo course materials modal
-- Demo role login
+## About
 
-### Important
-This version is a **frontend prototype**. Course activation changes are held in browser memory and reset when the page is refreshed.
+The Department of Geology at Debre Markos University offers a BSc in Geology, providing students with world-class geological education, research opportunities, and hands-on field training in Ethiopia's rich geological landscape.
 
-For production, connect:
-- React/Next.js frontend
-- Node.js/Express or Next.js API
-- PostgreSQL database
-- Secure authentication
-- Institutional file storage
-- University SSO if available
+This portal serves students, staff, and the public with:
 
-### Run
+- 📚 Course catalog and learning materials
+- 📝 Online examination system with instant grading
+- 🔬 Laboratory and equipment directory
+- 👥 Staff profiles and department leadership
+- 📰 News, activities, and field trip galleries
+- 📖 Academic resources (books, maps, references)
+- 🎓 Student handbook and academic calendar
+- 💼 Internship and field training guidelines
+- 📊 Research publications and department research
 
-1. Install Node.js (LTS recommended).
-2. Open this folder in VS Code.
-3. Open Terminal.
-4. Run:
+## Technology
+
+- **Frontend:** React 18 + Vite
+- **Backend/Database:** Supabase (PostgreSQL + Auth + Storage)
+- **Hosting:** Vercel
+- **Excel export:** SheetJS (xlsx)
+- **Icons:** Lucide React
+
+## Quick Start
 
 ```bash
+git clone https://github.com/dawitasmare55/dmugeo.git
+cd dmugeo
 npm install
 npm run dev
-```
-
-5. Open the local address shown by Vite, usually `http://localhost:5173`.
-
-### Demo Login
-Click **Portal Login**:
-- Student Portal: Year 1 demo student
-- Administrator: course management dashboard
-
-### Course visibility rule
-A student sees a course when:
-- course.active is true
-- course.year equals student.year
-
-For the production database, also enforce:
-- program
-- semester
-- enrollment
-- role permissions
-
-### Production next step
-Implement PostgreSQL tables for users, students, staff, courses, course_materials, publications, research_projects, news and events, then replace the in-memory arrays in `src/main.jsx` with API calls.
