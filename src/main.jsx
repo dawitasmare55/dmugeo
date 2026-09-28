@@ -192,7 +192,6 @@ function App(){
   const [profilePic, setProfilePic] = useState(null);
   const [showPasswordChange, setShowPasswordChange] = useState(false);
 
-  // NEW states
   const [studentHandbook, setStudentHandbook] = useState(null);
   const [academicCalendar, setAcademicCalendar] = useState(null);
   const [internshipDoc, setInternshipDoc] = useState(null);
@@ -236,7 +235,6 @@ function App(){
     }
   })(); }, []);
 
-  // NEW loaders
   useEffect(() => { (async () => {
     const { data } = await supabase.from('academic_documents').select('*');
     if (data) {
@@ -292,9 +290,6 @@ function App(){
     })();
   }, [selectedCourse]);
 
-  // ============================================
-  // SAVE PROFILE PICTURE
-  // ============================================
   const saveProfilePic = async (file) => {
     if (!file || !user) { alert('Please log in first.'); return; }
 
@@ -392,6 +387,40 @@ function App(){
     if (!item) return;
     await supabase.from('course_materials').update({ locked: !item.locked }).eq('id', materialId);
     setMaterials(prev => ({ ...prev, [courseId]: list.map(m => m.id === materialId ? { ...m, locked: !m.locked } : m) }));
+  };
+
+  // ============================================
+  // DELETE MATERIAL (NEW)
+  // ============================================
+  const deleteMaterial = async (courseId, materialId) => {
+    if (meta?.role !== 'staff') return;
+    const list = materials[courseId] || [];
+    const item = list.find(m => m.id === materialId);
+    if (!item) return;
+
+    if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return;
+
+    // Try to remove the file from storage
+    try {
+      const url = item.url || '';
+      const bucketMarker = '/object/public/materials/';
+      const idx = url.indexOf(bucketMarker);
+      if (idx !== -1) {
+        const filePath = url.substring(idx + bucketMarker.length);
+        await deleteFromStorage('materials', filePath);
+      }
+    } catch (e) {
+      console.warn('Storage cleanup failed (continuing):', e);
+    }
+
+    const { error } = await supabase.from('course_materials').delete().eq('id', materialId);
+    if (error) return alert('Delete failed: ' + error.message);
+
+    setMaterials(prev => ({
+      ...prev,
+      [courseId]: list.filter(m => m.id !== materialId)
+    }));
+    alert('✅ Material deleted.');
   };
 
   async function doLogin(email, password) {
@@ -516,7 +545,16 @@ function App(){
       {page==="students" && <Students navigate={navigate}
         studentHandbook={studentHandbook} setStudentHandbook={setStudentHandbook}
         user={user} meta={meta} />}
-      {selectedCourse && <CourseModal course={selectedCourse} close={()=>setSelectedCourse(null)} uploadMaterial={uploadMaterial} materials={materials} toggleLock={toggleLock} user={user} meta={meta}/>}
+      {selectedCourse && <CourseModal
+        course={selectedCourse}
+        close={()=>setSelectedCourse(null)}
+        uploadMaterial={uploadMaterial}
+        materials={materials}
+        toggleLock={toggleLock}
+        deleteMaterial={deleteMaterial}
+        user={user}
+        meta={meta}
+      />}
       {loginOpen && <LoginModal close={() => setLoginOpen(false)} doLogin={doLogin}/>}
 
       <footer>
@@ -555,9 +593,6 @@ function Homepage({ navigate, activeCourses, students, user, meta }) {
   );
 }
 
-// ============================================
-// HOMEPAGE VIDEO — autoplay, muted, loops
-// ============================================
 function HomeVideo({ user, meta }) {
   const [videoUrl, setVideoUrl] = useState('');
   const [busy, setBusy] = useState(false);
@@ -875,7 +910,6 @@ function Students({ navigate, studentHandbook, setStudentHandbook, user, meta })
         );
       })}
 
-      {/* Student Handbook Button */}
       <div style={{
         marginTop: '35px',
         background: 'linear-gradient(135deg, #102a43 0%, #1769aa 100%)',
@@ -3571,9 +3605,17 @@ function ExamSystem({ user, meta }) {
     );
   }
 
-  const filteredResults = filterYear === 'all'
-    ? results
-    : results.filter(r => r.student_year === filterYear);
+  // ═══════════════════════════════════════════════════════
+  // FIX #1: Students see only their own exam results
+  // ═══════════════════════════════════════════════════════
+  const filteredResults = useMemo(() => {
+    if (isStudent) {
+      return results.filter(r => r.user_id === user.id);
+    }
+    return filterYear === 'all'
+      ? results
+      : results.filter(r => r.student_year === filterYear);
+  }, [results, filterYear, isStudent, user]);
 
   return (
     <div style={{ marginTop: '40px', padding: '20px', background: 'white', borderRadius: '12px' }}>
@@ -3708,7 +3750,10 @@ function ExamSystem({ user, meta }) {
                 alignItems:'center', flexWrap:'wrap', gap:'10px',
                 marginBottom:'15px'
               }}>
-                <h3 style={{margin:0}}>📊 Exam Results ({filteredResults.length})</h3>
+                {/* FIX #1: Different heading for students vs staff */}
+                <h3 style={{margin:0}}>
+                  {isStudent ? '📊 My Exam Results' : '📊 Exam Results'} ({filteredResults.length})
+                </h3>
 
                 {isStaff && (
                   <div style={{display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap'}}>
@@ -3730,16 +3775,19 @@ function ExamSystem({ user, meta }) {
               </div>
 
               {filteredResults.length === 0 ? (
-                <p style={{color:'#66788a'}}>No results submitted yet.</p>
+                <p style={{color:'#66788a'}}>
+                  {isStudent ? 'You have not taken any exams yet.' : 'No results submitted yet.'}
+                </p>
               ) : (
                 <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth:'2000px'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2000px' : '1400px'}}>
                     <thead>
                       <tr style={{background:'#102a43',color:'white'}}>
                         <th style={{padding:'8px',textAlign:'left'}}>#</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Student Name</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Student ID</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Year</th>
+                        {/* FIX #1: Hide student name/ID columns for students */}
+                        {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student Name</th>}
+                        {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student ID</th>}
+                        {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Year</th>}
                         <th style={{padding:'8px',textAlign:'left'}}>Course Code</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Course Name</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Exam Title</th>
@@ -3755,16 +3803,16 @@ function ExamSystem({ user, meta }) {
                         <th style={{padding:'8px',textAlign:'center'}}>Time Taken</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Attempt</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Submitted At</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Action</th>
+                        {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Action</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {filteredResults.map((r,i) => (
                         <tr key={r.id} style={{borderBottom:'1px solid #e0e0e0'}}>
                           <td style={{padding:'8px'}}>{i+1}</td>
-                          <td style={{padding:'8px'}}>{r.student}</td>
-                          <td style={{padding:'8px'}}>{r.student_id || '—'}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.student_year || '—'}</td>
+                          {isStaff && <td style={{padding:'8px'}}>{r.student}</td>}
+                          {isStaff && <td style={{padding:'8px'}}>{r.student_id || '—'}</td>}
+                          {isStaff && <td style={{padding:'8px',textAlign:'center'}}>{r.student_year || '—'}</td>}
                           <td style={{padding:'8px'}}>{r.course_code || '—'}</td>
                           <td style={{padding:'8px'}}>{r.course_name || '—'}</td>
                           <td style={{padding:'8px'}}>{r.exam_title}</td>
@@ -3788,8 +3836,8 @@ function ExamSystem({ user, meta }) {
                           <td style={{padding:'8px',fontSize:'11px',color:'#66788a'}}>
                             {r.submitted_at ? new Date(r.submitted_at).toLocaleString() : '—'}
                           </td>
-                          <td style={{padding:'8px',textAlign:'center'}}>
-                            {isStaff && (
+                          {isStaff && (
+                            <td style={{padding:'8px',textAlign:'center'}}>
                               <button
                                 onClick={async () => {
                                   if (!confirm(`Delete result for ${r.student}?`)) return;
@@ -3805,8 +3853,8 @@ function ExamSystem({ user, meta }) {
                               >
                                 🗑️ Delete
                               </button>
-                            )}
-                          </td>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -3844,7 +3892,10 @@ function StudentPortal({ user, meta, courses, navigate, setSelectedCourse }) {
   );
 }
 
-function CourseModal({ course, close, uploadMaterial, materials, toggleLock, user, meta }) {
+// ============================================
+// COURSE MODAL — with DELETE button (FIX #3)
+// ============================================
+function CourseModal({ course, close, uploadMaterial, materials, toggleLock, deleteMaterial, user, meta }) {
   const [file, setFile] = useState(null);
   const [category, setCategory] = useState('Lecture Notes');
   const list = materials[course.id] || [];
@@ -3872,18 +3923,43 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, use
           <div key={m.id} style={{padding:'10px',border:'1px solid #dbe4ec',borderRadius:'6px',marginBottom:'6px',display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
             <FileText size={20}/>
             <span style={{flex:1}}>{m.name}</span>
-            {isStaff && user.id === m.user_id && (<label><input type="checkbox" checked={m.locked} onChange={() => toggleLock(course.id, m.id)} /> Lock</label>)}
-             {!m.locked && user && (
-             <a href={m.url} target="_blank" rel="noreferrer" className="textBtn">
-              Download
-            </a>
-          )}
-
-    {!m.locked && !user && (
-    <span style={{ color: '#66788a', fontSize: '12px', fontStyle: 'italic' }}>
-    Log in to download
-   </span>
-   )}
+            {isStaff && user.id === m.user_id && (
+              <label style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <input type="checkbox" checked={m.locked} onChange={() => toggleLock(course.id, m.id)} /> Lock
+              </label>
+            )}
+            {!m.locked && user && (
+              <a href={m.url} target="_blank" rel="noreferrer" className="textBtn">
+                Download
+              </a>
+            )}
+            {!m.locked && !user && (
+              <span style={{ color: '#66788a', fontSize: '12px', fontStyle: 'italic' }}>
+                Log in to download
+              </span>
+            )}
+            {/* FIX #3: Delete button for course materials */}
+            {isStaff && user.id === m.user_id && (
+              <button
+                onClick={() => deleteMaterial(course.id, m.id)}
+                title="Delete this material"
+                style={{
+                  background: 'white',
+                  border: '1px solid #dc3545',
+                  color: '#dc3545',
+                  padding: '5px 10px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                <Trash2 size={13} /> Delete
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -3892,7 +3968,7 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, use
 }
 
 // ============================================
-// STAFF COMPONENT (with Leadership button)
+// STAFF COMPONENT (with Change Password — FIX #2)
 // ============================================
 function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leadership, setLeadership }) {
   const isStaff = meta?.role === 'staff';
@@ -3901,6 +3977,7 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
   const [selectedStaff, setSelectedStaff] = useState(null);
   const [editing, setEditing] = useState(false);
   const [showLeadership, setShowLeadership] = useState(false);
+  const [showPwChange, setShowPwChange] = useState(false);
   const [details, setDetails] = useState({
     bio: '', phone: '', office: '', achievements: []
   });
@@ -3997,7 +4074,6 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
   return (
     <Page title="Academic Staff" kicker="OUR PEOPLE">
 
-      {/* Department Leadership Button */}
       <div style={{
         background: 'linear-gradient(135deg, #7a5c00 0%, #e1b84b 100%)',
         color: '#102a43', borderRadius: '14px',
@@ -4038,10 +4114,20 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
             <h2 style={{ margin: 0, color: '#102a43' }}>👤 My Staff Profile</h2>
+            {/* FIX #2: Add Change Password button */}
             {!editing ? (
-              <button className="primary" onClick={() => setEditing(true)}>
-                ✏️ Edit Profile
-              </button>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button className="primary" onClick={() => setEditing(true)}>
+                  ✏️ Edit Profile
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => setShowPwChange(true)}
+                  style={{ color: '#1769aa', borderColor: '#1769aa' }}
+                >
+                  🔒 Change Password
+                </button>
+              </div>
             ) : (
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="primary" onClick={saveDetails} disabled={busy} style={{ background: '#28a745' }}>
@@ -4244,7 +4330,114 @@ function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leade
           onClose={() => setSelectedStaff(null)}
         />
       )}
+
+      {/* FIX #2: Change Password modal */}
+      {showPwChange && (
+        <ChangePasswordModal
+          onClose={() => setShowPwChange(false)}
+          onSuccess={() => {
+            setShowPwChange(false);
+            alert('✅ Password changed successfully!');
+          }}
+        />
+      )}
     </Page>
+  );
+}
+
+// ============================================
+// CHANGE PASSWORD MODAL (FIX #2)
+// ============================================
+function ChangePasswordModal({ onClose, onSuccess }) {
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError('');
+    if (!currentPw) { setError('Enter your current password.'); return; }
+    if (newPw.length < 6) { setError('New password must be at least 6 characters.'); return; }
+    if (newPw !== confirmPw) { setError('New passwords do not match.'); return; }
+    if (newPw === currentPw) { setError('New password must differ from current.'); return; }
+
+    setBusy(true);
+
+    const { data: { user: me } } = await supabase.auth.getUser();
+    if (!me?.email) { setBusy(false); setError('Session expired. Please log in again.'); return; }
+
+    const { error: signInErr } = await supabase.auth.signInWithPassword({
+      email: me.email,
+      password: currentPw
+    });
+    if (signInErr) { setBusy(false); setError('Current password is incorrect.'); return; }
+
+    const { error: updErr } = await supabase.auth.updateUser({ password: newPw });
+    setBusy(false);
+    if (updErr) { setError(updErr.message); return; }
+
+    onSuccess();
+  };
+
+  return (
+    <div className="modalBackdrop" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(5,19,32,0.75)',
+      zIndex: 9999, display: 'flex', alignItems: 'center',
+      justifyContent: 'center', padding: '20px'
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'white', borderRadius: '14px',
+        padding: '30px', maxWidth: '460px', width: '100%',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+      }}>
+        <h2 style={{ margin: '0 0 5px', color: '#102a43' }}>🔒 Change Password</h2>
+        <p style={{ color: '#66788a', fontSize: '13px', margin: '0 0 20px' }}>
+          Enter your current password, then choose a new one.
+        </p>
+
+        {error && (
+          <div style={{
+            background: '#f8d7da', color: '#721c24',
+            padding: '10px', borderRadius: '6px',
+            marginBottom: '14px', fontSize: '13px'
+          }}>{error}</div>
+        )}
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>Current Password</label>
+        <input type="password" value={currentPw}
+          onChange={e => setCurrentPw(e.target.value)}
+          placeholder="Enter current password"
+          autoComplete="current-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }} />
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>New Password (min. 6 chars)</label>
+        <input type="password" value={newPw}
+          onChange={e => setNewPw(e.target.value)}
+          placeholder="Enter new password"
+          autoComplete="new-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 14px', border: '1px solid #ccc', borderRadius: '8px' }} />
+
+        <label style={{ fontWeight: '600', fontSize: '13px' }}>Confirm New Password</label>
+        <input type="password" value={confirmPw}
+          onChange={e => setConfirmPw(e.target.value)}
+          onKeyPress={e => e.key === 'Enter' && submit()}
+          placeholder="Re-enter new password"
+          autoComplete="new-password"
+          style={{ width: '100%', padding: '10px', margin: '5px 0 20px', border: '1px solid #ccc', borderRadius: '8px' }} />
+
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button className="primary" onClick={submit} disabled={busy}
+            style={{ flex: 1, background: '#28a745', padding: '11px' }}>
+            {busy ? 'Saving...' : '✅ Change Password'}
+          </button>
+          <button className="secondary" onClick={onClose}
+            style={{ flex: 1, padding: '11px' }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4326,9 +4519,6 @@ function StaffViewModal({ staffMember, onClose }) {
   );
 }
 
-// ============================================
-// DEPARTMENT LEADERSHIP PAGE
-// ============================================
 const ACADEMIC_COORDINATOR_DUTIES = [
   "Academic Program Coordination",
   "Course Scheduling",
