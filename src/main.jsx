@@ -3801,9 +3801,7 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM
-// Staff: own exams only. Students: own results only.
-// Anti-cheating: 3 violations = auto-submit + exam permanently locked
+// EXAM SYSTEM — with resume support
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -3834,12 +3832,25 @@ function ExamSystem({ user, meta }) {
   const [violationLog, setViolationLog] = useState([]);
   const MAX_VIOLATIONS = 3;
 
+  // Resume support
+  const [inProgressExams, setInProgressExams] = useState({});
+
   const fullscreenRef = useRef(false);
   const violationsRef = useRef(0);
   const examActiveRef = useRef(false);
+  const pausedRef = useRef(false);
+  // Refs mirror state so save-on-unmount and violation handler always read latest
+  const answersRef = useRef({});
+  const qIndexRef = useRef(0);
+  const timeLeftRef = useRef(null);
 
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
+
+  // Keep refs in sync with state
+  useEffect(() => { answersRef.current = answers; }, [answers]);
+  useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
+  useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
 
   const enterFullscreen = async () => {
     try {
@@ -3870,6 +3881,8 @@ function ExamSystem({ user, meta }) {
 
   const registerViolation = (reason) => {
     if (!examActiveRef.current) return;
+    if (pausedRef.current) return;  // ignore while paused (student navigating away)
+
     violationsRef.current += 1;
     const current = violationsRef.current;
 
@@ -3886,9 +3899,9 @@ function ExamSystem({ user, meta }) {
         student: meta?.name,
         exam_id: currentExam.id,
         violations: current,
-        answers,
-        current_index: qIndex,
-        time_left: timeLeft
+        answers: answersRef.current,
+        current_index: qIndexRef.current,
+        time_left: timeLeftRef.current
       }, { onConflict: 'user_id,exam_id' }).then(() => {});
     }
 
@@ -3910,6 +3923,31 @@ function ExamSystem({ user, meta }) {
   };
   useEffect(() => { refresh(); }, []);
 
+  // ============================================
+  // LOAD IN-PROGRESS EXAMS (student only)
+  // ============================================
+  useEffect(() => {
+    if (!isStudent || !user) return;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from('exam_progress')
+        .select('*')
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.warn('Could not load in-progress exams:', error);
+        return;
+      }
+
+      const map = {};
+      (data || []).forEach(row => {
+        map[row.exam_id] = row;
+      });
+      setInProgressExams(map);
+    })();
+  }, [isStudent, user, exams]);
+
   useEffect(() => {
     if (!currentExam || submitted || timeLeft === null || timeLeft <= 0) return;
     const t = setInterval(() => {
@@ -3921,6 +3959,36 @@ function ExamSystem({ user, meta }) {
     return () => clearInterval(t);
   }, [currentExam, timeLeft, submitted]);
 
+  // ============================================
+  // PAUSE / RESUME ANTI-CHEATING on unmount
+  // ============================================
+  useEffect(() => {
+    if (!currentExam || submitted) return;
+
+    return () => {
+      pausedRef.current = true;
+      examActiveRef.current = false;
+
+      // Save progress before leaving
+      if (user && currentExam) {
+        supabase.from('exam_progress').upsert({
+          user_id: user.id,
+          student: meta?.name,
+          exam_id: currentExam.id,
+          answers: answersRef.current,
+          current_index: qIndexRef.current,
+          time_left: timeLeftRef.current,
+          violations: violationsRef.current
+        }, { onConflict: 'user_id,exam_id' }).then(() => {});
+      }
+
+      // Exit fullscreen so student isn't trapped
+      try {
+        if (document.fullscreenElement) document.exitFullscreen();
+      } catch (e) { /* ignore */ }
+    };
+  }, [currentExam, submitted]);
+
   // Anti-cheating listeners
   useEffect(() => {
     if (!currentExam || submitted || !isStudent) {
@@ -3929,9 +3997,15 @@ function ExamSystem({ user, meta }) {
     }
 
     examActiveRef.current = true;
-    violationsRef.current = 0;
-    setViolations(0);
-    setViolationLog([]);
+    pausedRef.current = false;
+
+    // Only reset violations on FRESH start (no in-progress record)
+    const isResuming = !!inProgressExams[currentExam.id];
+    if (!isResuming) {
+      violationsRef.current = 0;
+      setViolations(0);
+      setViolationLog([]);
+    }
 
     const fsTimer = setTimeout(() => { enterFullscreen(); }, 500);
 
@@ -4195,9 +4269,9 @@ function ExamSystem({ user, meta }) {
   };
 
   // ============================================
-  // START EXAM — with retake prevention
+  // START / RESUME EXAM
   // ============================================
-  const startExam = async (exam) => {
+  const startExam = async (exam, resume = false) => {
     // Block retake if student already has a result for this exam
     const alreadyTaken = results.some(
       r => r.user_id === user.id && r.exam_id === exam.id
@@ -4217,30 +4291,81 @@ function ExamSystem({ user, meta }) {
       return;
     }
 
-    const { data } = await supabase.from('exam_progress').select('*').eq('user_id', user.id).eq('exam_id', exam.id).maybeSingle();
+    // Fetch saved progress (if any)
+    const { data } = await supabase
+      .from('exam_progress')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('exam_id', exam.id)
+      .maybeSingle();
 
-    violationsRef.current = 0;
-    setViolations(0);
-    setViolationLog([]);
+    const isResuming = resume || !!data;
+
+    if (!isResuming) {
+      violationsRef.current = 0;
+      setViolations(0);
+      setViolationLog([]);
+    } else {
+      const priorViolations = data?.violations || 0;
+      violationsRef.current = priorViolations;
+      setViolations(priorViolations);
+    }
 
     setCurrentExam(exam);
-    setSubmitted(false); setQIndex(0); setAnswers({});
+    setSubmitted(false);
     setStartTime(Date.now());
 
-    alert('📋 Exam Rules:\n\n• Fullscreen mode will be enforced\n• Tab switching will be logged\n• Copy/paste is disabled\n• ' + MAX_VIOLATIONS + ' violations = auto-submit\n\nClick OK to start.');
-
-    if (data) {
+    if (isResuming && data) {
       setAnswers(data.answers || {});
       setQIndex(data.current_index || 0);
-      setTimeLeft(data.time_left || exam.duration * 60);
+
+      const remaining = data.time_left ?? exam.duration * 60;
+      if (remaining <= 0) {
+        alert('⏰ Time is up for this exam. It will be submitted now.');
+        setTimeLeft(0);
+        setTimeout(() => doSubmit(true, true), 200);
+        return;
+      }
+
+      setTimeLeft(remaining);
+
+      setInProgressExams(prev => ({ ...prev, [exam.id]: data }));
+
+      alert(
+        '▶️ Continuing your exam.\n\n' +
+        `⏱️ Time remaining: ${Math.floor(remaining / 60)}m ${remaining % 60}s\n` +
+        `❓ Question ${(data.current_index || 0) + 1} of ${exam.questions.length}\n` +
+        (priorViolations > 0 ? `⚠️ Violations so far: ${priorViolations}/${MAX_VIOLATIONS}\n` : '') +
+        '\nFullscreen will be enforced again.'
+      );
     } else {
+      setAnswers({});
+      setQIndex(0);
       setTimeLeft(exam.duration * 60);
-      await supabase.from('exam_progress').insert([{
-        user_id: user.id, student: meta?.name,
-        exam_id: exam.id, answers: {}, current_index: 0,
+
+      const newRow = {
+        user_id: user.id,
+        student: meta?.name,
+        exam_id: exam.id,
+        answers: {},
+        current_index: 0,
         time_left: exam.duration * 60,
         violations: 0
-      }]);
+      };
+
+      setInProgressExams(prev => ({ ...prev, [exam.id]: newRow }));
+
+      alert(
+        '📋 Exam Rules:\n\n' +
+        '• Fullscreen mode will be enforced\n' +
+        '• Tab switching will be logged\n' +
+        '• Copy/paste is disabled\n' +
+        `• ${MAX_VIOLATIONS} violations = auto-submit\n` +
+        '• Your progress is saved every 5 seconds — you can safely pause and resume\n\n' +
+        'Click OK to start.'
+      );
+
+      await supabase.from('exam_progress').insert([newRow]);
     }
   };
 
@@ -4314,6 +4439,13 @@ function ExamSystem({ user, meta }) {
     await exitFullscreen();
 
     setSubmitted(true);
+
+    setInProgressExams(prev => {
+      const next = { ...prev };
+      delete next[currentExam.id];
+      return next;
+    });
+
     setTimeout(() => { setCurrentExam(null); setSubmitted(false); refresh(); }, 2000);
   };
 
@@ -4333,9 +4465,6 @@ function ExamSystem({ user, meta }) {
     [exams, user]
   );
 
-  // ============================================
-  // STUDENT EXAM HISTORY
-  // ============================================
   const myResults = useMemo(
     () => results.filter(r => r.user_id === user?.id),
     [results, user]
@@ -4759,15 +4888,71 @@ Answer: C`
                 </p>
               )}
 
-              {availableExams.map(e => (
-                <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
-                  <strong>{e.title}</strong>
-                  <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
-                    {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
-                  </p>
-                  <button className="primary" onClick={()=>startExam(e)} style={{marginTop:'8px'}}>Start Exam</button>
-                </div>
-              ))}
+              {availableExams.map(e => {
+                const progress = inProgressExams[e.id];
+                const isResuming = !!progress;
+                const remaining = progress?.time_left;
+                const answered = progress?.answers ? Object.keys(progress.answers).length : 0;
+
+                return (
+                  <div
+                    key={e.id}
+                    style={{
+                      padding: '15px',
+                      border: isResuming ? '2px solid #e1b84b' : '1px solid #dbe4ec',
+                      background: isResuming ? '#fffbf0' : 'white',
+                      borderRadius: '8px',
+                      marginBottom: '10px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                      <strong>{e.title}</strong>
+                      {isResuming && (
+                        <span style={{
+                          background: '#e1b84b', color: '#102a43',
+                          padding: '3px 12px', borderRadius: '14px',
+                          fontSize: '11px', fontWeight: '800',
+                          letterSpacing: '0.5px'
+                        }}>
+                          ⏸ IN PROGRESS
+                        </span>
+                      )}
+                    </div>
+
+                    <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
+                      {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
+                    </p>
+
+                    {isResuming && (
+                      <p style={{
+                        margin: '6px 0',
+                        color: '#856404',
+                        fontSize: '13px',
+                        fontWeight: '600'
+                      }}>
+                        ⏱️ Time remaining: {Math.floor((remaining || 0) / 60)}m {(remaining || 0) % 60}s
+                        {' • '}
+                        ✅ Answered: {answered}/{e.questions?.length || 0}
+                        {' • '}
+                        ❓ Resumes at Q{((progress.current_index || 0) + 1)}
+                      </p>
+                    )}
+
+                    <button
+                      className="primary"
+                      onClick={() => startExam(e, isResuming)}
+                      style={{
+                        marginTop: '8px',
+                        background: isResuming ? '#e1b84b' : undefined,
+                        color: isResuming ? '#102a43' : undefined,
+                        fontWeight: isResuming ? '800' : undefined
+                      }}
+                    >
+                      {isResuming ? '▶️ Continue Exam' : 'Start Exam'}
+                    </button>
+                  </div>
+                );
+              })}
 
               {terminatedExamIds.size > 0 && (
                 <div style={{ marginTop: '30px' }}>
@@ -5776,7 +5961,7 @@ function Research({ publications, setPublications, user, meta }) {
       const { data } = await supabase.from('publications').insert([row]).select();
       if (data) setPublications(prev => [...data, ...prev]);
     }
-    setForm({title:'',authors:'',year:newDate().getFullYear(),journal:'',link:'',abstract:''}); setEditing(null);
+    setForm({title:'',authors:'',year:new Date().getFullYear(),journal:'',link:'',abstract:''}); setEditing(null);
     alert('✅ Saved!');
   };
   const del = async (id) => { if (confirm('Delete?')) { await supabase.from('publications').delete().eq('id', id); setPublications(prev => prev.filter(p=>p.id!==id)); } };
