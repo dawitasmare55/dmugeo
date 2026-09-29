@@ -5,7 +5,8 @@ import {
   GraduationCap, ShieldCheck, ToggleLeft, ToggleRight, Upload,
   Newspaper, Microscope, Map, LogIn, LogOut, UserRound,
   Download, PlayCircle, Headphones, Mail, Phone, MapPin, ExternalLink,
-  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save
+  Calendar, Briefcase, UserCheck, BookMarked, Crown, Award, Trash2, Plus, Save,
+  Flag
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from './supabaseClient';
@@ -172,9 +173,6 @@ const initialStudents = [
   {id:"DMU-GEO-0407",name:"Tegegne Tienaw",year:4,program:"BSc in Geology",status:"Active"}
 ];
 
-// ============================================
-// APP — Main root component
-// ============================================
 function App(){
   const [page,setPage]=useState("homepage");
   const [mobile,setMobile]=useState(false);
@@ -235,7 +233,6 @@ function App(){
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Listen for "openLogin" event from child components (e.g. Exam System login prompt)
   useEffect(() => {
     const handler = () => setLoginOpen(true);
     window.addEventListener('openLogin', handler);
@@ -4009,7 +4006,7 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM
+// EXAM SYSTEM — with new exam page layout
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -4035,6 +4032,7 @@ function ExamSystem({ user, meta }) {
   const [submitted, setSubmitted] = useState(false);
   const [startTime, setStartTime] = useState(null);
   const [filterYear, setFilterYear] = useState('all');
+  const [flaggedQuestions, setFlaggedQuestions] = useState(new Set());
 
   const [violations, setViolations] = useState(0);
   const [violationLog, setViolationLog] = useState([]);
@@ -4048,6 +4046,7 @@ function ExamSystem({ user, meta }) {
   const answersRef = useRef({});
   const qIndexRef = useRef(0);
   const timeLeftRef = useRef(null);
+  const examStartedAtRef = useRef(null);
 
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
@@ -4195,6 +4194,7 @@ function ExamSystem({ user, meta }) {
 
   useEffect(() => {
     if (!currentExam || submitted) return;
+    if (timeLeft === null || timeLeft === undefined) return;
 
     try {
       const existing = JSON.parse(localStorage.getItem('activeExam') || '{}');
@@ -4206,6 +4206,7 @@ function ExamSystem({ user, meta }) {
         answers,
         currentIndex: qIndex,
         violations: violationsRef.current,
+        startedAt: examStartedAtRef.current || existing.startedAt || Date.now(),
         lastTick: Date.now()
       }));
     } catch {}
@@ -4366,7 +4367,6 @@ function ExamSystem({ user, meta }) {
     if (!targetYear) return alert('Choose target year.');
     if (!totalMark || totalMark < 1) return alert('Enter a valid total mark.');
 
-    // Resolve final exam type — "Other" requires a custom value
     let finalExamType = examType;
     if (examType === 'Other') {
       if (!customExamType.trim()) {
@@ -4472,20 +4472,43 @@ function ExamSystem({ user, meta }) {
     setCurrentExam(exam);
     setSubmitted(false);
     setStartTime(Date.now());
+    setFlaggedQuestions(new Set());
 
     if (isResuming && data) {
       setAnswers(data.answers || {});
       setQIndex(data.current_index || 0);
 
       let remaining = data.time_left ?? exam.duration * 60;
+      let originalStartedAt = null;
 
-      try {
-        const stored = JSON.parse(localStorage.getItem('activeExam') || '{}');
-        if (stored.examId === exam.id && stored.lastTick) {
-          const elapsed = Math.floor((Date.now() - stored.lastTick) / 1000);
-          remaining = Math.max(0, remaining - elapsed);
-        }
-      } catch {}
+      if (data.started_at) {
+        originalStartedAt = new Date(data.started_at).getTime();
+      }
+
+      if (!originalStartedAt) {
+        try {
+          const stored = JSON.parse(localStorage.getItem('activeExam') || '{}');
+          if (stored.examId === exam.id && stored.startedAt) {
+            originalStartedAt = stored.startedAt;
+          }
+        } catch {}
+      }
+
+      if (originalStartedAt) {
+        const totalSec = (exam.duration || 30) * 60;
+        const elapsedSec = Math.floor((Date.now() - originalStartedAt) / 1000);
+        remaining = Math.max(0, totalSec - elapsedSec);
+        examStartedAtRef.current = originalStartedAt;
+      } else {
+        try {
+          const stored = JSON.parse(localStorage.getItem('activeExam') || '{}');
+          if (stored.examId === exam.id && stored.lastTick) {
+            const elapsed = Math.floor((Date.now() - stored.lastTick) / 1000);
+            remaining = Math.max(0, remaining - elapsed);
+          }
+        } catch {}
+        examStartedAtRef.current = Date.now();
+      }
 
       if (remaining <= 0) {
         alert('⏰ Time is up for this exam. It will be submitted now.');
@@ -4493,7 +4516,7 @@ function ExamSystem({ user, meta }) {
         localStorage.setItem('activeExam', JSON.stringify({
           examId: exam.id,
           userId: user.id,
-          startedAt: Date.now(),
+          startedAt: examStartedAtRef.current,
           violations: violationsRef.current,
           timeLeft: 0,
           answers: data.answers || {},
@@ -4511,7 +4534,7 @@ function ExamSystem({ user, meta }) {
       localStorage.setItem('activeExam', JSON.stringify({
         examId: exam.id,
         userId: user.id,
-        startedAt: Date.now(),
+        startedAt: examStartedAtRef.current,
         violations: violationsRef.current,
         timeLeft: remaining,
         answers: data.answers || {},
@@ -4539,6 +4562,9 @@ function ExamSystem({ user, meta }) {
       setQIndex(0);
       setTimeLeft(exam.duration * 60);
 
+      const now = Date.now();
+      examStartedAtRef.current = now;
+
       const newRow = {
         user_id: user.id,
         student: meta?.name,
@@ -4546,7 +4572,8 @@ function ExamSystem({ user, meta }) {
         answers: {},
         current_index: 0,
         time_left: exam.duration * 60,
-        violations: 0
+        violations: 0,
+        started_at: new Date(now).toISOString()
       };
 
       setInProgressExams(prev => ({ ...prev, [exam.id]: newRow }));
@@ -4554,12 +4581,12 @@ function ExamSystem({ user, meta }) {
       localStorage.setItem('activeExam', JSON.stringify({
         examId: exam.id,
         userId: user.id,
-        startedAt: Date.now(),
+        startedAt: now,
         violations: 0,
         timeLeft: exam.duration * 60,
         answers: {},
         currentIndex: 0,
-        lastTick: Date.now()
+        lastTick: now
       }));
 
       alert(
@@ -4586,11 +4613,20 @@ function ExamSystem({ user, meta }) {
   useEffect(() => {
     if (!currentExam || submitted) return;
     const t = setInterval(async () => {
+      let startedAtIso = null;
+      try {
+        const s = JSON.parse(localStorage.getItem('activeExam') || '{}');
+        if (s.examId === currentExam.id && s.startedAt) {
+          startedAtIso = new Date(s.startedAt).toISOString();
+        }
+      } catch {}
+
       await supabase.from('exam_progress').upsert({
         user_id: user.id, student: meta?.name,
         exam_id: currentExam.id,
         answers, current_index: qIndex, time_left: timeLeft,
-        violations: violationsRef.current
+        violations: violationsRef.current,
+        ...(startedAtIso ? { started_at: startedAtIso } : {})
       }, { onConflict: 'user_id,exam_id' });
     }, 5000);
     return () => clearInterval(t);
@@ -4651,6 +4687,7 @@ function ExamSystem({ user, meta }) {
     await supabase.from('exam_progress').delete().eq('user_id', user.id).eq('exam_id', currentExam.id);
 
     localStorage.removeItem('activeExam');
+    examStartedAtRef.current = null;
 
     await exitFullscreen();
 
@@ -4764,10 +4801,32 @@ function ExamSystem({ user, meta }) {
     XLSX.writeFile(workbook, `exam_results_${sheetName.replace(/\s/g,'_')}_${timestamp}.xlsx`);
   };
 
+  const toggleFlag = (questionId) => {
+    setFlaggedQuestions(prev => {
+      const next = new Set(prev);
+      if (next.has(questionId)) next.delete(questionId);
+      else next.add(questionId);
+      return next;
+    });
+  };
+
+  // ============================================
+  // EXAM PAGE — NEW LAYOUT (matches the image)
+  // ============================================
   if (currentExam && isStudent && !submitted) {
     const q = currentExam.questions[qIndex];
+    const totalQuestions = currentExam.questions.length;
+    const answeredCount = Object.keys(answers).length;
+
     return (
-      <div style={{ marginTop: '30px', background: 'white', padding: '25px', borderRadius: '12px' }}>
+      <div style={{
+        marginTop: '30px',
+        background: '#fff',
+        padding: '30px 20px',
+        borderRadius: '12px',
+        fontFamily: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+      }}>
+        {/* Violations banner */}
         {violations > 0 && (
           <div style={{
             background: violations >= MAX_VIOLATIONS - 1 ? '#dc3545' : '#fff3cd',
@@ -4789,26 +4848,369 @@ function ExamSystem({ user, meta }) {
           </div>
         )}
 
-        <h3>{currentExam.title}</h3>
-        <p style={{ color: '#66788a' }}>
-          {currentExam.course_code} — {currentExam.course_name} • {currentExam.exam_type} • Total Mark: {currentExam.total_mark || '—'}
-        </p>
-        <p>Q {qIndex+1}/{currentExam.questions.length} • ⏱️ {fmt(timeLeft)}</p>
-        <p style={{ fontSize: '18px' }}>{q.text}</p>
-        {q.choices.map((c,i) => (
-          <label key={i} style={{
-            display: 'block', padding: '10px', margin: '5px 0',
-            border: answers[q.id]===c ? '2px solid #1769aa' : '1px solid #dbe4ec',
-            borderRadius: '6px', cursor: 'pointer'
+        {/* Header */}
+        <div style={{ marginBottom: '8px' }}>
+          <h1 style={{
+            fontSize: '28px',
+            fontWeight: '700',
+            color: '#0b1a2b',
+            marginBottom: '8px',
+            lineHeight: '1.3',
+            margin: 0
           }}>
-            <input type="radio" checked={answers[q.id]===c}
-              onChange={()=>setAnswers(a=>({...a,[q.id]:c}))}/> {c}
-          </label>
-        ))}
-        <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
-          <button className="secondary" onClick={()=>setQIndex(qIndex-1)} disabled={qIndex===0}>← Prev</button>
-          <button className="secondary" onClick={()=>setQIndex(qIndex+1)} disabled={qIndex===currentExam.questions.length-1}>Next →</button>
-          <button className="primary" onClick={()=>doSubmit(false)} style={{background:'#28a745'}}>Submit</button>
+            {currentExam.title}
+          </h1>
+        </div>
+
+        {/* Tabs */}
+        <div style={{
+          display: 'flex',
+          gap: '32px',
+          borderBottom: '1px solid #d6dee6',
+          paddingBottom: '6px',
+          marginBottom: '22px'
+        }}>
+          <span style={{ fontSize: '15px', fontWeight: '500', color: '#4a5c6b', cursor: 'default', paddingBottom: '4px', position: 'relative' }}>
+            {currentExam.course_code || 'Course'} <span style={{ fontSize: '11px', marginLeft: '4px' }}>▾</span>
+          </span>
+          <span style={{
+            color: '#0b1a2b',
+            fontWeight: '700',
+            fontSize: '15px',
+            paddingBottom: '4px',
+            position: 'relative'
+          }}>
+            {currentExam.exam_type || 'Quiz'}
+            <span style={{
+              content: '',
+              position: 'absolute',
+              bottom: '-7px',
+              left: 0,
+              width: '100%',
+              height: '3px',
+              backgroundColor: '#0b1a2b',
+              borderRadius: '2px 2px 0 0'
+            }} />
+          </span>
+        </div>
+
+        {/* Layout: main area + quiz navigation sidebar */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '30px', background: '#fff' }}>
+          {/* LEFT — Question area */}
+          <div style={{ flex: '1 1 700px', minWidth: '500px' }}>
+            {/* Back button */}
+            <button
+              onClick={() => {
+                if (confirm('Leave exam? Your progress is saved. The timer will keep running.')) {
+                  doSubmit(true, true);
+                }
+              }}
+              style={{
+                display: 'inline-block',
+                backgroundColor: '#cbd5e1',
+                color: '#0b1a2b',
+                fontWeight: '600',
+                fontSize: '14px',
+                padding: '7px 20px',
+                borderRadius: '20px',
+                border: 'none',
+                cursor: 'pointer',
+                marginBottom: '28px',
+                transition: 'background 0.15s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.backgroundColor = '#b6c2d1'}
+              onMouseLeave={e => e.currentTarget.style.backgroundColor = '#cbd5e1'}
+            >
+              Back
+            </button>
+
+            {/* Question meta + question */}
+            <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              {/* Question meta (left column) */}
+              <div style={{
+                background: '#f8fafc',
+                border: '1px solid #d6dee6',
+                borderRadius: '8px',
+                padding: '18px 16px',
+                width: '170px',
+                flexShrink: 0,
+                textAlign: 'center',
+                fontSize: '13px',
+                lineHeight: '1.6',
+                color: '#2c3e50'
+              }}>
+                <div style={{ fontWeight: '700', fontSize: '15px', color: '#0b1a2b', marginBottom: '4px' }}>
+                  Question {qIndex + 1}
+                </div>
+                <div style={{ color: '#7f8c8d', fontStyle: 'italic' }}>
+                  {answers[q.id] ? 'Answered' : 'Not yet answered'}
+                </div>
+                <div style={{ fontWeight: '600', margin: '6px 0' }}>
+                  Marked out of {q.points || 1}.00
+                </div>
+                <div
+                  onClick={() => toggleFlag(q.id)}
+                  style={{
+                    marginTop: '10px',
+                    fontSize: '12px',
+                    color: flaggedQuestions.has(q.id) ? '#e6b800' : '#2980b9',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '4px',
+                    fontWeight: flaggedQuestions.has(q.id) ? '700' : '400'
+                  }}
+                >
+                  <Flag size={12} fill={flaggedQuestions.has(q.id) ? '#e6b800' : 'none'} />
+                  {flaggedQuestions.has(q.id) ? 'Flagged' : 'Flag question'}
+                </div>
+              </div>
+
+              {/* Question + choices */}
+              <div style={{ flex: 1, minWidth: '280px' }}>
+                <div style={{
+                  background: '#eef7fb',
+                  borderRadius: '8px',
+                  padding: '24px 26px 20px',
+                  border: '1px solid #d0e3ef'
+                }}>
+                  <div style={{
+                    fontSize: '16px',
+                    fontWeight: '500',
+                    color: '#1e2b3c',
+                    lineHeight: '1.6',
+                    marginBottom: '22px'
+                  }}>
+                    {q.text}
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {q.choices.map((c, i) => (
+                      <label
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '12px',
+                          fontSize: '15px',
+                          color: '#1e2b3c',
+                          lineHeight: '1.5',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name={`q-${q.id}`}
+                          checked={answers[q.id] === c}
+                          onChange={() => setAnswers(a => ({ ...a, [q.id]: c }))}
+                          style={{
+                            marginTop: '3px',
+                            width: '18px',
+                            height: '18px',
+                            accentColor: '#0b1a2b',
+                            cursor: 'pointer',
+                            flexShrink: 0
+                          }}
+                        />
+                        <span style={{
+                          fontWeight: '600',
+                          color: '#2c3e50',
+                          minWidth: '20px'
+                        }}>
+                          {String.fromCharCode(97 + i)}.
+                        </span>
+                        <span>{c}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Timer row */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+                  <div style={{
+                    backgroundColor: '#fce8e8',
+                    border: '1px solid #e6b3b3',
+                    color: '#a12b2b',
+                    fontWeight: '600',
+                    fontSize: '15px',
+                    padding: '8px 18px',
+                    borderRadius: '6px',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    Time left {fmt(timeLeft)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom navigation */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              marginTop: '32px',
+              paddingTop: '8px'
+            }}>
+              <button
+                onClick={() => setQIndex(Math.max(0, qIndex - 1))}
+                disabled={qIndex === 0}
+                style={{
+                  backgroundColor: '#cbd5e1',
+                  color: '#0b1a2b',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  padding: '10px 26px',
+                  borderRadius: '24px',
+                  border: 'none',
+                  cursor: qIndex === 0 ? 'not-allowed' : 'pointer',
+                  opacity: qIndex === 0 ? 0.5 : 1,
+                  transition: 'background 0.15s'
+                }}
+                onMouseEnter={e => { if (qIndex !== 0) e.currentTarget.style.backgroundColor = '#b6c2d1'; }}
+                onMouseLeave={e => { if (qIndex !== 0) e.currentTarget.style.backgroundColor = '#cbd5e1'; }}
+              >
+                Previous page
+              </button>
+
+              <button
+                onClick={() => {
+                  if (qIndex === totalQuestions - 1) {
+                    doSubmit(false);
+                  } else {
+                    setQIndex(qIndex + 1);
+                  }
+                }}
+                style={{
+                  backgroundColor: '#1a5a9c',
+                  color: '#fff',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  padding: '10px 30px',
+                  borderRadius: '24px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'background 0.15s'
+                }}
+                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#134a82'}
+                onMouseLeave={e => e.currentTarget.style.backgroundColor = '#1a5a9c'}
+              >
+                {qIndex === totalQuestions - 1 ? 'Submit' : 'Next page'}
+              </button>
+            </div>
+          </div>
+
+          {/* RIGHT — Quiz navigation */}
+          <div style={{
+            flex: '0 0 300px',
+            minWidth: '260px',
+            background: '#fff',
+            border: '1px solid #d6dee6',
+            borderRadius: '10px',
+            padding: '18px 16px 20px',
+            height: 'fit-content',
+            boxShadow: '0 2px 6px rgba(0, 0, 0, 0.02)'
+          }}>
+            <h2 style={{
+              fontSize: '17px',
+              fontWeight: '700',
+              color: '#0b1a2b',
+              marginBottom: '14px',
+              paddingBottom: '10px',
+              borderBottom: '1px solid #e2e8f0',
+              marginTop: 0
+            }}>
+              Quiz navigation
+            </h2>
+
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(7, 1fr)',
+              gap: '6px'
+            }}>
+              {currentExam.questions.map((question, i) => {
+                const isCurrent = i === qIndex;
+                const isAnswered = answers[question.id] !== undefined && answers[question.id] !== '';
+                const isFlagged = flaggedQuestions.has(question.id);
+
+                let btnStyle = {
+                  width: '100%',
+                  aspectRatio: '1 / 1',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '13px',
+                  fontWeight: '500',
+                  borderRadius: '4px',
+                  border: '1px solid #cbd5e1',
+                  backgroundColor: '#f1f5f9',
+                  color: '#1e2b3c',
+                  cursor: 'pointer',
+                  transition: 'background 0.1s, border-color 0.1s',
+                  padding: 0,
+                  lineHeight: 1
+                };
+
+                if (isAnswered) {
+                  btnStyle = {
+                    ...btnStyle,
+                    backgroundColor: '#cbd5e1',
+                    borderColor: '#94a3b8'
+                  };
+                }
+
+                if (isCurrent) {
+                  btnStyle = {
+                    ...btnStyle,
+                    backgroundColor: '#1a5a9c',
+                    borderColor: '#1a5a9c',
+                    color: '#fff',
+                    fontWeight: '700'
+                  };
+                }
+
+                if (isFlagged) {
+                  btnStyle = {
+                    ...btnStyle,
+                    border: '2px solid #e6b800',
+                    backgroundColor: isCurrent ? '#1a5a9c' : '#fff8e1'
+                  };
+                }
+
+                return (
+                  <button
+                    key={question.id}
+                    onClick={() => setQIndex(i)}
+                    style={btnStyle}
+                    onMouseEnter={e => {
+                      if (!isCurrent) e.currentTarget.style.backgroundColor = '#e2e8f0';
+                    }}
+                    onMouseLeave={e => {
+                      if (!isCurrent) {
+                        e.currentTarget.style.backgroundColor = isAnswered ? '#cbd5e1' : '#f1f5f9';
+                      }
+                    }}
+                  >
+                    {i + 1}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{
+              marginTop: '14px',
+              paddingTop: '12px',
+              borderTop: '1px solid #e2e8f0',
+              fontSize: '12px',
+              color: '#66788a',
+              display: 'flex',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '4px'
+            }}>
+              <span>✅ Answered: {answeredCount}</span>
+              <span>❓ Unanswered: {totalQuestions - answeredCount}</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -5124,7 +5526,15 @@ Answer: C`
           {availableExams.map(e => {
             const progress = inProgressExams[e.id];
             const isResuming = !!progress;
-            const remaining = progress?.time_left;
+
+            let remainingDisplay = progress?.time_left;
+            const anchorIso = progress?.started_at;
+            if (anchorIso) {
+              const totalSec = (e.duration || 30) * 60;
+              const elapsed = Math.floor((Date.now() - new Date(anchorIso).getTime()) / 1000);
+              remainingDisplay = Math.max(0, totalSec - elapsed);
+            }
+
             const answered = progress?.answers ? Object.keys(progress.answers).length : 0;
 
             return (
@@ -5163,7 +5573,7 @@ Answer: C`
                     fontSize: '13px',
                     fontWeight: '600'
                   }}>
-                    ⏱️ Time remaining: {Math.floor((remaining || 0) / 60)}m {(remaining || 0) % 60}s
+                    ⏱️ Time remaining: {Math.floor((remainingDisplay || 0) / 60)}m {(remainingDisplay || 0) % 60}s
                     {' • '}
                     ✅ Answered: {answered}/{e.questions?.length || 0}
                     {' • '}
@@ -5473,9 +5883,6 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, del
   );
 }
 
-// ============================================
-// STAFF
-// ============================================
 function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leadership, setLeadership }) {
   const isStaff = meta?.role === 'staff';
   const [allStaff, setAllStaff] = useState([]);
