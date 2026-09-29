@@ -19,7 +19,7 @@ async function uploadToStorage(bucket, file) {
   const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
   const { error } = await supabase.storage.from(bucket).upload(path, file);
   if (error) { console.error('Upload error:', error); return null; }
-  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+  const { data } = await supabase.storage.from(bucket).getPublicUrl(path);
   return { url: data.publicUrl, path };
 }
 
@@ -172,6 +172,9 @@ const initialStudents = [
   {id:"DMU-GEO-0407",name:"Tegegne Tienaw",year:4,program:"BSc in Geology",status:"Active"}
 ];
 
+// ============================================
+// APP — Main root component
+// ============================================
 function App(){
   const [page,setPage]=useState("homepage");
   const [mobile,setMobile]=useState(false);
@@ -232,16 +235,15 @@ function App(){
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Listen for "openLogin" event from child components (e.g. Exam System login prompt)
+  useEffect(() => {
+    const handler = () => setLoginOpen(true);
+    window.addEventListener('openLogin', handler);
+    return () => window.removeEventListener('openLogin', handler);
+  }, []);
+
   // ============================================
   // GLOBAL ANTI-CHEATING WATCHER
-  // Fires even when ExamSystem is unmounted (e.g., student navigated
-  // to another page). Reads the active exam from localStorage, so
-  // leaving fullscreen or switching tabs mid-exam ALWAYS counts as a
-  // violation — regardless of which page the student is viewing.
-  //
-  // The suppression window prevents a single action (like exiting
-  // fullscreen) from cascading into 3 violations because the alert
-  // dialog itself triggers blur/focus events.
   // ============================================
   useEffect(() => {
     if (!user) return;
@@ -252,7 +254,6 @@ function App(){
     const SUPPRESS_MS = 1500;
 
     const bump = async (reason) => {
-      // Suppress violations during alert cool-down
       if (Date.now() < suppressUntil) return;
       if (Date.now() < (window.__violationSuppressUntil || 0)) return;
       if (processing) return;
@@ -350,7 +351,6 @@ function App(){
         return;
       } else {
         alert(`⚠️ Violation ${active.violations}/${MAX_VIOLATIONS}\n\nReason: ${reason}\n\n${MAX_VIOLATIONS - active.violations} more will end your exam.`);
-        // Extend suppression after the alert closes
         suppressUntil = Date.now() + SUPPRESS_MS;
         window.__violationSuppressUntil = Date.now() + SUPPRESS_MS;
       }
@@ -504,14 +504,11 @@ function App(){
   const saveProfilePic = async (file) => {
     if (!file || !user) { alert('Please log in first.'); return; }
 
-    console.log('[saveProfilePic] Start. User:', user.id, 'File:', file.name, file.size, 'bytes');
-
     const res = await uploadToStorage('profiles', file);
     if (!res) {
       alert('Upload failed. Make sure the "profiles" bucket exists and is Public.');
       return;
     }
-    console.log('[saveProfilePic] Uploaded URL:', res.url);
 
     const { error } = await supabase
       .from('profiles')
@@ -527,12 +524,10 @@ function App(){
       );
 
     if (error) {
-      console.error('[saveProfilePic] DB error:', error);
       alert('Save failed: ' + error.message);
       return;
     }
 
-    console.log('[saveProfilePic] DB upsert succeeded');
     setProfilePic(res.url);
     alert('✅ Profile picture saved!');
   };
@@ -820,6 +815,9 @@ function App(){
   );
 }
 
+// ============================================
+// HOMEPAGE
+// ============================================
 function Homepage({ navigate, activeCourses, students, user, meta }) {
   const images = ['/Amethyst.jpg','/Opal.webp','/GERD.webp','/sapphire.avif','/bridge-over-blue-nile.webp','/choke mountains1.jpg','/choke mountains2.jpg','/my-background.jpg.jpg'];
   window.navigate = navigate;
@@ -1039,6 +1037,9 @@ function Stat({icon,n,label}){return <div className="stat"><div className="statI
 function Feature({icon,title,text,onClick}){return <button className="feature" onClick={onClick}><div>{icon}</div><h3>{title}</h3><p>{text}</p><ChevronRight/></button>}
 function SectionTitle({kicker,title,text}){return <div className="sectionTitle"><div className="eyebrow">{kicker}</div><h2>{title}</h2>{text&&<p>{text}</p>}</div>}
 
+// ============================================
+// STUDENTS
+// ============================================
 function Students({ navigate, studentHandbook, setStudentHandbook, user, meta }) {
   const now = new Date();
   const month = now.getMonth() + 1;
@@ -1327,6 +1328,9 @@ function StudentHandbookPage({ doc, setDoc, user, meta, onBack }) {
 
 function Page({title,kicker,children}){return <main className="page"><div className="pageHero"><div className="eyebrow">{kicker}</div><h1>{title}</h1></div><section className="section">{children}</section></main>}
 
+// ============================================
+// ABOUT
+// ============================================
 function About({ user, meta }) {
   const isStaff = meta?.role === 'staff';
   const [posts, setPosts] = useState([]);
@@ -1649,6 +1653,9 @@ function AboutSections({ isStaff, user, meta }) {
   );
 }
 
+// ============================================
+// ACTIVITIES
+// ============================================
 function Activities({ user, meta }) {
   const [activities, setActivities] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -2195,6 +2202,9 @@ const labelStyle = {
   color: '#102a43'
 };
 
+// ============================================
+// RESOURCES
+// ============================================
 function Resources({ user, meta }) {
   const [tab, setTab] = useState('labs');
   const [labs, setLabs] = useState([]);
@@ -2976,6 +2986,9 @@ const badgeStyle = { background: '#1769aa', color: 'white', padding: '4px 12px',
 const linkStyle = { display: 'inline-block', marginTop: '10px', padding: '8px 16px', background: '#1769aa', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600' };
 function Contact(){return <Page title="Contact" kicker="GET IN TOUCH"><div><h2>Department of Geology</h2><p>Debre Markos University, Ethiopia</p></div></Page>}
 
+// ============================================
+// ACADEMICS
+// ============================================
 function Academics({ navigate, user, meta, academicCalendar, setAcademicCalendar,
                      internshipDoc, setInternshipDoc, advisors, setAdvisors }) {
   const [showExam, setShowExam] = useState(false);
@@ -3533,6 +3546,9 @@ function CoursesPage({ courses, search, setSearch, yearFilter, setYearFilter, se
   );
 }
 
+// ============================================
+// LOGIN MODAL
+// ============================================
 function LoginModal({ close, doLogin, onForgotPassword }) {
   const [type, setType] = useState('student');
   const [email, setEmail] = useState('');
@@ -3994,8 +4010,6 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 
 // ============================================
 // EXAM SYSTEM
-// Anti-cheating enforced globally from App() via localStorage.
-// Violation suppression prevents alert-cascade.
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -4008,6 +4022,7 @@ function ExamSystem({ user, meta }) {
   const [courseCode, setCourseCode] = useState('');
   const [courseName, setCourseName] = useState('');
   const [examType, setExamType] = useState('Midterm');
+  const [customExamType, setCustomExamType] = useState('');
   const [targetYear, setTargetYear] = useState(2);
   const [totalMark, setTotalMark] = useState(100);
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -4036,6 +4051,76 @@ function ExamSystem({ user, meta }) {
 
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
+
+  // ============================================
+  // NOT LOGGED IN → show login prompt
+  // ============================================
+  if (!user || !meta) {
+    return (
+      <div style={{
+        marginTop: '40px',
+        padding: '60px 30px',
+        background: 'linear-gradient(135deg, #102a43 0%, #1769aa 100%)',
+        borderRadius: '16px',
+        textAlign: 'center',
+        color: 'white',
+        boxShadow: '0 8px 30px rgba(16,42,67,0.25)'
+      }}>
+        <div style={{
+          display: 'inline-grid',
+          placeItems: 'center',
+          width: '90px',
+          height: '90px',
+          borderRadius: '50%',
+          background: 'rgba(255,255,255,0.15)',
+          marginBottom: '20px'
+        }}>
+          <ShieldCheck size={44} color="#e1b84b" />
+        </div>
+
+        <h2 style={{ margin: '0 0 10px', fontSize: '24px' }}>
+          📋 Exam System — Login Required
+        </h2>
+
+        <p style={{
+          margin: '0 auto 24px',
+          maxWidth: '520px',
+          opacity: 0.9,
+          fontSize: '15px',
+          lineHeight: '1.7'
+        }}>
+          The Exam System is only available to registered students and staff members.
+          Please log in with your DMU credentials to access it.
+        </p>
+
+        <button
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('openLogin'));
+          }}
+          style={{
+            background: '#e1b84b',
+            color: '#102a43',
+            border: 'none',
+            padding: '14px 36px',
+            borderRadius: '10px',
+            fontWeight: '800',
+            fontSize: '15px',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '10px',
+            boxShadow: '0 4px 14px rgba(225,184,75,0.4)'
+          }}
+        >
+          <LogIn size={18} /> Log In to Continue
+        </button>
+
+        <p style={{ marginTop: '22px', opacity: 0.75, fontSize: '13px' }}>
+          New to the portal? Contact the Department of Geology office.
+        </p>
+      </div>
+    );
+  }
 
   useEffect(() => { answersRef.current = answers; }, [answers]);
   useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
@@ -4144,7 +4229,6 @@ function ExamSystem({ user, meta }) {
     };
   }, [currentExam, submitted]);
 
-  // Sync violations count from localStorage into local state (for the banner)
   useEffect(() => {
     if (!currentExam || submitted) return;
     const t = setInterval(() => {
@@ -4281,10 +4365,20 @@ function ExamSystem({ user, meta }) {
     if (!courseName.trim()) return alert('Enter course name.');
     if (!targetYear) return alert('Choose target year.');
     if (!totalMark || totalMark < 1) return alert('Enter a valid total mark.');
+
+    // Resolve final exam type — "Other" requires a custom value
+    let finalExamType = examType;
+    if (examType === 'Other') {
+      if (!customExamType.trim()) {
+        return alert('Please enter the custom assessment type.');
+      }
+      finalExamType = customExamType.trim();
+    }
+
     const row = {
       title: title.trim(), duration, released: false, questions,
       course_code: courseCode.trim(), course_name: courseName.trim(),
-      exam_type: examType, target_year: targetYear, user_id: user.id,
+      exam_type: finalExamType, target_year: targetYear, user_id: user.id,
       total_mark: totalMark,
     };
     if (editingId) await supabase.from('exams').update(row).eq('id', editingId);
@@ -4298,6 +4392,7 @@ function ExamSystem({ user, meta }) {
     setEditingId(null); setShowForm(false);
     setCourseCode(''); setCourseName(''); setExamType('Midterm'); setTargetYear(2);
     setTotalMark(100);
+    setCustomExamType('');
   };
 
   const editE = (e) => {
@@ -4306,7 +4401,17 @@ function ExamSystem({ user, meta }) {
     setQuestions(e.questions || []);
     setCourseCode(e.course_code || '');
     setCourseName(e.course_name || '');
-    setExamType(e.exam_type || 'Midterm');
+
+    const STANDARD_TYPES = ['Midterm', 'Final', 'Quiz', 'Assignment', 'Practical'];
+    const savedType = e.exam_type || 'Midterm';
+    if (STANDARD_TYPES.includes(savedType)) {
+      setExamType(savedType);
+      setCustomExamType('');
+    } else {
+      setExamType('Other');
+      setCustomExamType(savedType);
+    }
+
     setTargetYear(e.target_year || 2);
     setTotalMark(e.total_mark || 100);
     setShowForm(true);
@@ -4362,7 +4467,6 @@ function ExamSystem({ user, meta }) {
       setViolations(priorViolations);
     }
 
-    // Reset suppression window so a fresh start isn't silenced
     window.__violationSuppressUntil = 0;
 
     setCurrentExam(exam);
@@ -4723,55 +4827,53 @@ function ExamSystem({ user, meta }) {
     <div style={{ marginTop: '40px', padding: '20px', background: 'white', borderRadius: '12px' }}>
       <h2 style={{ color: '#102a43' }}>📋 Exam System</h2>
 
-      {!user ? <p>Please login.</p> : (
-        <>
-          {isStaff && (
-            <div>
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                <button className="primary" onClick={()=>setShowForm(!showForm)}>
-                  {showForm ? '📕 Close Exam Form' : '📝 Create Exam'}
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => { setBulkOpen(!bulkOpen); setBulkError(''); }}
-                  style={{ background: bulkOpen ? '#dc3545' : '#17a2b8', color: 'white', border: 'none' }}
-                >
-                  {bulkOpen ? '📕 Close Bulk Import' : '📋 Bulk Import Questions'}
-                </button>
-              </div>
+      {isStaff && (
+        <div>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <button className="primary" onClick={()=>setShowForm(!showForm)}>
+              {showForm ? '📕 Close Exam Form' : '📝 Create Exam'}
+            </button>
+            <button
+              className="secondary"
+              onClick={() => { setBulkOpen(!bulkOpen); setBulkError(''); }}
+              style={{ background: bulkOpen ? '#dc3545' : '#17a2b8', color: 'white', border: 'none' }}
+            >
+              {bulkOpen ? '📕 Close Bulk Import' : '📋 Bulk Import Questions'}
+            </button>
+          </div>
 
-              <p style={{
-                color: '#66788a',
-                fontSize: '12px',
-                fontStyle: 'italic',
-                marginTop: '-10px',
-                marginBottom: '18px'
-              }}>
-                ℹ️ You are viewing only the exams you created. Other staff members' exams and their students' results are hidden.
+          <p style={{
+            color: '#66788a',
+            fontSize: '12px',
+            fontStyle: 'italic',
+            marginTop: '-10px',
+            marginBottom: '18px'
+          }}>
+            ℹ️ You are viewing only the exams you created. Other staff members' exams and their students' results are hidden.
+          </p>
+
+          {bulkOpen && (
+            <div style={{
+              background: 'linear-gradient(135deg, #eaf4fb, #ffffff)',
+              padding: '22px',
+              borderRadius: '12px',
+              marginBottom: '25px',
+              border: '2px solid #17a2b8'
+            }}>
+              <h3 style={{ marginTop: 0, color: '#102a43' }}>📋 Paste Exam Questions</h3>
+              <p style={{ color: '#66788a', fontSize: '13px', marginBottom: '14px', lineHeight: '1.6' }}>
+                Paste your full exam below. Use this format:
               </p>
-
-              {bulkOpen && (
-                <div style={{
-                  background: 'linear-gradient(135deg, #eaf4fb, #ffffff)',
-                  padding: '22px',
-                  borderRadius: '12px',
-                  marginBottom: '25px',
-                  border: '2px solid #17a2b8'
-                }}>
-                  <h3 style={{ marginTop: 0, color: '#102a43' }}>📋 Paste Exam Questions</h3>
-                  <p style={{ color: '#66788a', fontSize: '13px', marginBottom: '14px', lineHeight: '1.6' }}>
-                    Paste your full exam below. Use this format:
-                  </p>
-                  <pre style={{
-                    background: '#102a43',
-                    color: '#e1b84b',
-                    padding: '14px',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                    lineHeight: '1.6',
-                    overflowX: 'auto',
-                    marginBottom: '14px'
-                  }}>{`1. What is the hardest mineral?
+              <pre style={{
+                background: '#102a43',
+                color: '#e1b84b',
+                padding: '14px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                lineHeight: '1.6',
+                overflowX: 'auto',
+                marginBottom: '14px'
+              }}>{`1. What is the hardest mineral?
 A) Quartz
 B) Diamond
 C) Topaz
@@ -4784,63 +4886,63 @@ B) NaCl
 C) CaCO3
 Answer: A`}</pre>
 
-                  <p style={{ color: '#66788a', fontSize: '12px', marginBottom: '14px' }}>
-                    ✓ Questions: <code>1.</code> <code>2.</code> <code>Q1.</code> <code>Q1)</code><br/>
-                    ✓ Choices: <code>A)</code> <code>A.</code> <code>a)</code> (2–5 choices)<br/>
-                    ✓ Answer: <code>Answer: B</code> or <code>Ans: B</code> or <code>Correct: B</code>
-                  </p>
+              <p style={{ color: '#66788a', fontSize: '12px', marginBottom: '14px' }}>
+                ✓ Questions: <code>1.</code> <code>2.</code> <code>Q1.</code> <code>Q1)</code><br/>
+                ✓ Choices: <code>A)</code> <code>A.</code> <code>a)</code> (2–5 choices)<br/>
+                ✓ Answer: <code>Answer: B</code> or <code>Ans: B</code> or <code>Correct: B</code>
+              </p>
 
-                  {bulkError && (
-                    <div style={{
-                      background: '#f8d7da',
-                      color: '#721c24',
-                      padding: '12px',
-                      borderRadius: '8px',
-                      marginBottom: '14px',
-                      fontSize: '13px',
-                      whiteSpace: 'pre-wrap',
-                      fontFamily: 'monospace'
-                    }}>
-                      {bulkError}
-                    </div>
-                  )}
+              {bulkError && (
+                <div style={{
+                  background: '#f8d7da',
+                  color: '#721c24',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  marginBottom: '14px',
+                  fontSize: '13px',
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'monospace'
+                }}>
+                  {bulkError}
+                </div>
+              )}
 
-                  <textarea
-                    value={bulkText}
-                    onChange={(e) => setBulkText(e.target.value)}
-                    rows="14"
-                    placeholder={`Paste your exam questions here...\n\nExample:\n1. What is the hardest mineral?\nA) Quartz\nB) Diamond\nC) Topaz\nD) Corundum\nAnswer: B`}
-                    style={{
-                      width: '100%',
-                      padding: '14px',
-                      borderRadius: '8px',
-                      border: '1px solid #ccc',
-                      fontFamily: 'monospace',
-                      fontSize: '13px',
-                      lineHeight: '1.6',
-                      resize: 'vertical'
-                    }}
-                  />
+              <textarea
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                rows="14"
+                placeholder={`Paste your exam questions here...\n\nExample:\n1. What is the hardest mineral?\nA) Quartz\nB) Diamond\nC) Topaz\nD) Corundum\nAnswer: B`}
+                style={{
+                  width: '100%',
+                  padding: '14px',
+                  borderRadius: '8px',
+                  border: '1px solid #ccc',
+                  fontFamily: 'monospace',
+                  fontSize: '13px',
+                  lineHeight: '1.6',
+                  resize: 'vertical'
+                }}
+              />
 
-                  <div style={{ marginTop: '14px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                    <button
-                      className="primary"
-                      onClick={handleBulkImport}
-                      disabled={!bulkText.trim()}
-                      style={{ background: '#28a745' }}
-                    >
-                      ✅ Parse & Import
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => { setBulkText(''); setBulkError(''); }}
-                    >
-                      Clear
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => {
-                        setBulkText(
+              <div style={{ marginTop: '14px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  className="primary"
+                  onClick={handleBulkImport}
+                  disabled={!bulkText.trim()}
+                  style={{ background: '#28a745' }}
+                >
+                  ✅ Parse & Import
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => { setBulkText(''); setBulkError(''); }}
+                >
+                  Clear
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setBulkText(
 `1. What is the hardest mineral on Earth?
 A) Quartz
 B) Diamond
@@ -4868,393 +4970,410 @@ B) Metamorphic
 C) Igneous
 D) Clastic
 Answer: C`
-                        );
-                        setBulkError('');
-                      }}
-                    >
-                      📄 Load Sample
-                    </button>
-                  </div>
-                </div>
-              )}
+                    );
+                    setBulkError('');
+                  }}
+                >
+                  📄 Load Sample
+                </button>
+              </div>
+            </div>
+          )}
 
-              {showForm && (
-                <div style={{background:'#f8f9fa',padding:'20px',borderRadius:'12px',marginBottom:'20px'}}>
-                  <h3>New Exam</h3>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Exam Title</label>
-                      <input type="text" value={title} onChange={e=>setTitle(e.target.value)}
-                        placeholder="e.g. Midterm Exam"
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Exam Type</label>
-                      <select value={examType} onChange={e=>setExamType(e.target.value)}
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}>
-                        <option>Midterm</option><option>Final</option><option>Quiz</option>
-                        <option>Assignment</option><option>Practical</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Total Mark</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={totalMark}
-                        onChange={e=>setTotalMark(parseInt(e.target.value)||0)}
-                        placeholder="e.g. 100"
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}
-                      />
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Course Code</label>
-                      <input type="text" value={courseCode} onChange={e=>setCourseCode(e.target.value)}
-                        placeholder="e.g. Geol 2011"
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Course Name</label>
-                      <input type="text" value={courseName} onChange={e=>setCourseName(e.target.value)}
-                        placeholder="e.g. General Geology"
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Target Year (batch)</label>
-                      <select value={targetYear} onChange={e=>setTargetYear(parseInt(e.target.value))}
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}>
-                        <option value={1}>Year 1</option><option value={2}>Year 2</option>
-                        <option value={3}>Year 3</option><option value={4}>Year 4</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{fontSize:'13px',fontWeight:'600'}}>Duration (min)</label>
-                      <input type="number" value={duration} onChange={e=>setDuration(parseInt(e.target.value)||30)}
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
-                    </div>
-                  </div>
-                  <hr style={{margin:'15px 0'}}/>
-                  {questions.map((q,qi)=>(
-                    <div key={q.id} style={{background:'white',padding:'12px',marginBottom:'8px',borderRadius:'6px'}}>
-                      <strong>Q{qi+1}</strong>
-                      <input type="text" value={q.text} onChange={e=>updQ(q.id,'text',e.target.value)}
-                        placeholder="Question text" style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
-                      {q.choices.map((c,ci)=>(
-                        <input key={ci} type="text" value={c} onChange={e=>updC(q.id,ci,e.target.value)}
-                          placeholder={`Choice ${ci+1}`} style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
-                      ))}
-                      <input type="text" value={q.correctAnswer}
-                        onChange={e=>updQ(q.id,'correctAnswer',e.target.value)}
-                        placeholder="Correct answer (must match a choice)"
-                        style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
-                      <input type="number" value={q.points||1}
-                        onChange={e=>updQ(q.id,'points',parseInt(e.target.value)||1)}
-                        placeholder="Points" min="1" style={{width:'80px',padding:'8px',marginTop:'5px'}}/>
-                    </div>
+          {showForm && (
+            <div style={{background:'#f8f9fa',padding:'20px',borderRadius:'12px',marginBottom:'20px'}}>
+              <h3>New Exam</h3>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px',marginBottom:'10px'}}>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Exam Title</label>
+                  <input type="text" value={title} onChange={e=>setTitle(e.target.value)}
+                    placeholder="e.g. Midterm Exam"
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Exam Type</label>
+                  <select value={examType} onChange={e=>setExamType(e.target.value)}
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}>
+                    <option>Midterm</option><option>Final</option><option>Quiz</option>
+                    <option>Assignment</option><option>Practical</option>
+                    <option>Other</option>
+                  </select>
+
+                  {examType === 'Other' && (
+                    <input
+                      type="text"
+                      value={customExamType}
+                      onChange={e => setCustomExamType(e.target.value)}
+                      placeholder="e.g. Lab Report, Field Work, Term Paper"
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        marginTop: '6px',
+                        borderRadius: '6px',
+                        border: '1px solid #28a745',
+                        background: '#f0fff4',
+                        fontSize: '13px'
+                      }}
+                    />
+                  )}
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Total Mark</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={totalMark}
+                    onChange={e=>setTotalMark(parseInt(e.target.value)||0)}
+                    placeholder="e.g. 100"
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}
+                  />
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Course Code</label>
+                  <input type="text" value={courseCode} onChange={e=>setCourseCode(e.target.value)}
+                    placeholder="e.g. Geol 2011"
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Course Name</label>
+                  <input type="text" value={courseName} onChange={e=>setCourseName(e.target.value)}
+                    placeholder="e.g. General Geology"
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Target Year (batch)</label>
+                  <select value={targetYear} onChange={e=>setTargetYear(parseInt(e.target.value))}
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}>
+                    <option value={1}>Year 1</option><option value={2}>Year 2</option>
+                    <option value={3}>Year 3</option><option value={4}>Year 4</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:'13px',fontWeight:'600'}}>Duration (min)</label>
+                  <input type="number" value={duration} onChange={e=>setDuration(parseInt(e.target.value)||30)}
+                    style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
+                </div>
+              </div>
+              <hr style={{margin:'15px 0'}}/>
+              {questions.map((q,qi)=>(
+                <div key={q.id} style={{background:'white',padding:'12px',marginBottom:'8px',borderRadius:'6px'}}>
+                  <strong>Q{qi+1}</strong>
+                  <input type="text" value={q.text} onChange={e=>updQ(q.id,'text',e.target.value)}
+                    placeholder="Question text" style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
+                  {q.choices.map((c,ci)=>(
+                    <input key={ci} type="text" value={c} onChange={e=>updC(q.id,ci,e.target.value)}
+                      placeholder={`Choice ${ci+1}`} style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
                   ))}
-                  <button className="secondary" onClick={addQ}>+ Question</button>
-                  <button className="primary" onClick={saveExam} style={{marginLeft:'10px'}}>
-                    {editingId?'Update':'Create'}
+                  <input type="text" value={q.correctAnswer}
+                    onChange={e=>updQ(q.id,'correctAnswer',e.target.value)}
+                    placeholder="Correct answer (must match a choice)"
+                    style={{width:'100%',padding:'8px',marginTop:'5px'}}/>
+                  <input type="number" value={q.points||1}
+                    onChange={e=>updQ(q.id,'points',parseInt(e.target.value)||1)}
+                    placeholder="Points" min="1" style={{width:'80px',padding:'8px',marginTop:'5px'}}/>
+                </div>
+              ))}
+              <button className="secondary" onClick={addQ}>+ Question</button>
+              <button className="primary" onClick={saveExam} style={{marginLeft:'10px'}}>
+                {editingId?'Update':'Create'}
+              </button>
+            </div>
+          )}
+
+          <h3>Manage Exams</h3>
+          {myExams.length === 0 && (
+            <p style={{color:'#66788a'}}>You haven't created any exams yet.</p>
+          )}
+          {myExams.map(e => (
+            <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:'10px'}}>
+                <div>
+                  <strong>{e.title}</strong> {e.released?'✅ Released':'🔒 Draft'}
+                  <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
+                    {e.course_code} — {e.course_name} • {e.exam_type} • Year {e.target_year}
+                    {e.total_mark ? ` • Total Mark: ${e.total_mark}` : ''}
+                  </p>
+                </div>
+                <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+                  <button className="secondary" onClick={()=>editE(e)}>Edit</button>
+                  <button className="secondary" onClick={()=>delE(e.id)} style={{color:'#dc3545'}}>Delete</button>
+                  <button className={e.released?'secondary':'primary'}
+                    onClick={()=>relE(e.id,!e.released)}
+                    style={{background:e.released?'#ffc107':'#28a745',color:e.released?'#333':'white'}}>
+                    {e.released?'Unrelease':'Release'}
                   </button>
                 </div>
-              )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
-              <h3>Manage Exams</h3>
-              {myExams.length === 0 && (
-                <p style={{color:'#66788a'}}>You haven't created any exams yet.</p>
-              )}
-              {myExams.map(e => (
-                <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:'10px'}}>
+      {isStudent && (
+        <div>
+          <h3>📚 Available Exams for Year {meta?.year}</h3>
+
+          {availableExams.length === 0 && (
+            <p style={{color:'#66788a'}}>
+              {exams.filter(e => e.released && e.target_year === meta?.year).length === 0
+                ? 'No exams released for your year yet.'
+                : 'You have already taken or completed all released exams. See your results below.'}
+            </p>
+          )}
+
+          {availableExams.map(e => {
+            const progress = inProgressExams[e.id];
+            const isResuming = !!progress;
+            const remaining = progress?.time_left;
+            const answered = progress?.answers ? Object.keys(progress.answers).length : 0;
+
+            return (
+              <div
+                key={e.id}
+                style={{
+                  padding: '15px',
+                  border: isResuming ? '2px solid #e1b84b' : '1px solid #dbe4ec',
+                  background: isResuming ? '#fffbf0' : 'white',
+                  borderRadius: '8px',
+                  marginBottom: '10px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                  <strong>{e.title}</strong>
+                  {isResuming && (
+                    <span style={{
+                      background: '#e1b84b', color: '#102a43',
+                      padding: '3px 12px', borderRadius: '14px',
+                      fontSize: '11px', fontWeight: '800',
+                      letterSpacing: '0.5px'
+                    }}>
+                      ⏸ IN PROGRESS
+                    </span>
+                  )}
+                </div>
+
+                <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
+                  {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
+                </p>
+
+                {isResuming && (
+                  <p style={{
+                    margin: '6px 0',
+                    color: '#856404',
+                    fontSize: '13px',
+                    fontWeight: '600'
+                  }}>
+                    ⏱️ Time remaining: {Math.floor((remaining || 0) / 60)}m {(remaining || 0) % 60}s
+                    {' • '}
+                    ✅ Answered: {answered}/{e.questions?.length || 0}
+                    {' • '}
+                    ❓ Resumes at Q{((progress.current_index || 0) + 1)}
+                  </p>
+                )}
+
+                <button
+                  className="primary"
+                  onClick={() => startExam(e, isResuming)}
+                  style={{
+                    marginTop: '8px',
+                    background: isResuming ? '#e1b84b' : undefined,
+                    color: isResuming ? '#102a43' : undefined,
+                    fontWeight: isResuming ? '800' : undefined
+                  }}
+                >
+                  {isResuming ? '▶️ Continue Exam' : 'Start Exam'}
+                </button>
+              </div>
+            );
+          })}
+
+          {terminatedExamIds.size > 0 && (
+            <div style={{ marginTop: '30px' }}>
+              <h4 style={{ color: '#dc3545', marginBottom: '12px' }}>
+                🚫 Terminated Exams ({terminatedExamIds.size})
+              </h4>
+              <p style={{ color: '#66788a', fontSize: '13px', marginTop: '-4px', marginBottom: '14px' }}>
+                These exams were automatically submitted due to multiple cheating violations. You cannot retake them.
+              </p>
+
+              {exams.filter(e => terminatedExamIds.has(e.id)).map(e => (
+                <div
+                  key={e.id}
+                  style={{
+                    padding: '15px',
+                    border: '2px solid #dc3545',
+                    background: '#fff5f5',
+                    borderRadius: '8px',
+                    marginBottom: '10px'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                     <div>
-                      <strong>{e.title}</strong> {e.released?'✅ Released':'🔒 Draft'}
-                      <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
-                        {e.course_code} — {e.course_name} • {e.exam_type} • Year {e.target_year}
-                        {e.total_mark ? ` • Total Mark: ${e.total_mark}` : ''}
+                      <strong style={{ color: '#721c24' }}>{e.title}</strong>
+                      <p style={{ margin: '4px 0', color: '#721c24', fontSize: '13px' }}>
+                        {e.course_code} — {e.course_name} • {e.exam_type}
                       </p>
                     </div>
-                    <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                      <button className="secondary" onClick={()=>editE(e)}>Edit</button>
-                      <button className="secondary" onClick={()=>delE(e.id)} style={{color:'#dc3545'}}>Delete</button>
-                      <button className={e.released?'secondary':'primary'}
-                        onClick={()=>relE(e.id,!e.released)}
-                        style={{background:e.released?'#ffc107':'#28a745',color:e.released?'#333':'white'}}>
-                        {e.released?'Unrelease':'Release'}
-                      </button>
-                    </div>
+                    <span style={{
+                      background: '#dc3545', color: 'white',
+                      padding: '4px 14px', borderRadius: '20px',
+                      fontSize: '12px', fontWeight: '700',
+                      letterSpacing: '0.5px'
+                    }}>
+                      🚫 TERMINATED
+                    </span>
                   </div>
+                  <p style={{ margin: '8px 0 0', color: '#721c24', fontSize: '13px', fontStyle: 'italic' }}>
+                    {myResults.find(r => r.exam_id === e.id && (r.violations || 0) >= 3)?.violations || 3} violation(s) detected — exam was auto-submitted.
+                    You must contact your instructor if you believe this was a mistake.
+                  </p>
                 </div>
               ))}
             </div>
           )}
+        </div>
+      )}
 
-          {isStudent && (
-            <div>
-              <h3>📚 Available Exams for Year {meta?.year}</h3>
+      {(isStaff || isStudent) && (
+        <div style={{marginTop:'40px'}}>
+          <div style={{
+            display:'flex', justifyContent:'space-between',
+            alignItems:'center', flexWrap:'wrap', gap:'10px',
+            marginBottom:'15px'
+          }}>
+            <h3 style={{margin:0}}>
+              {isStudent ? '📊 My Exam Results' : '📊 My Exams — Student Results'} ({filteredResults.length})
+            </h3>
 
-              {availableExams.length === 0 && (
-                <p style={{color:'#66788a'}}>
-                  {exams.filter(e => e.released && e.target_year === meta?.year).length === 0
-                    ? 'No exams released for your year yet.'
-                    : 'You have already taken or completed all released exams. See your results below.'}
-                </p>
-              )}
+            {isStaff && (
+              <div style={{display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap'}}>
+                <select value={filterYear} onChange={e=>setFilterYear(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+                  style={{padding:'8px', borderRadius:'6px', border:'1px solid #ccc'}}>
+                  <option value="all">All Years</option>
+                  <option value={1}>Year 1</option>
+                  <option value={2}>Year 2</option>
+                  <option value={3}>Year 3</option>
+                  <option value={4}>Year 4</option>
+                </select>
 
-              {availableExams.map(e => {
-                const progress = inProgressExams[e.id];
-                const isResuming = !!progress;
-                const remaining = progress?.time_left;
-                const answered = progress?.answers ? Object.keys(progress.answers).length : 0;
-
-                return (
-                  <div
-                    key={e.id}
-                    style={{
-                      padding: '15px',
-                      border: isResuming ? '2px solid #e1b84b' : '1px solid #dbe4ec',
-                      background: isResuming ? '#fffbf0' : 'white',
-                      borderRadius: '8px',
-                      marginBottom: '10px'
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                      <strong>{e.title}</strong>
-                      {isResuming && (
-                        <span style={{
-                          background: '#e1b84b', color: '#102a43',
-                          padding: '3px 12px', borderRadius: '14px',
-                          fontSize: '11px', fontWeight: '800',
-                          letterSpacing: '0.5px'
-                        }}>
-                          ⏸ IN PROGRESS
-                        </span>
-                      )}
-                    </div>
-
-                    <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
-                      {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
-                    </p>
-
-                    {isResuming && (
-                      <p style={{
-                        margin: '6px 0',
-                        color: '#856404',
-                        fontSize: '13px',
-                        fontWeight: '600'
-                      }}>
-                        ⏱️ Time remaining: {Math.floor((remaining || 0) / 60)}m {(remaining || 0) % 60}s
-                        {' • '}
-                        ✅ Answered: {answered}/{e.questions?.length || 0}
-                        {' • '}
-                        ❓ Resumes at Q{((progress.current_index || 0) + 1)}
-                      </p>
-                    )}
-
-                    <button
-                      className="primary"
-                      onClick={() => startExam(e, isResuming)}
-                      style={{
-                        marginTop: '8px',
-                        background: isResuming ? '#e1b84b' : undefined,
-                        color: isResuming ? '#102a43' : undefined,
-                        fontWeight: isResuming ? '800' : undefined
-                      }}
-                    >
-                      {isResuming ? '▶️ Continue Exam' : 'Start Exam'}
-                    </button>
-                  </div>
-                );
-              })}
-
-              {terminatedExamIds.size > 0 && (
-                <div style={{ marginTop: '30px' }}>
-                  <h4 style={{ color: '#dc3545', marginBottom: '12px' }}>
-                    🚫 Terminated Exams ({terminatedExamIds.size})
-                  </h4>
-                  <p style={{ color: '#66788a', fontSize: '13px', marginTop: '-4px', marginBottom: '14px' }}>
-                    These exams were automatically submitted due to multiple cheating violations. You cannot retake them.
-                  </p>
-
-                  {exams.filter(e => terminatedExamIds.has(e.id)).map(e => (
-                    <div
-                      key={e.id}
-                      style={{
-                        padding: '15px',
-                        border: '2px solid #dc3545',
-                        background: '#fff5f5',
-                        borderRadius: '8px',
-                        marginBottom: '10px'
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                        <div>
-                          <strong style={{ color: '#721c24' }}>{e.title}</strong>
-                          <p style={{ margin: '4px 0', color: '#721c24', fontSize: '13px' }}>
-                            {e.course_code} — {e.course_name} • {e.exam_type}
-                          </p>
-                        </div>
-                        <span style={{
-                          background: '#dc3545', color: 'white',
-                          padding: '4px 14px', borderRadius: '20px',
-                          fontSize: '12px', fontWeight: '700',
-                          letterSpacing: '0.5px'
-                        }}>
-                          🚫 TERMINATED
-                        </span>
-                      </div>
-                      <p style={{ margin: '8px 0 0', color: '#721c24', fontSize: '13px', fontStyle: 'italic' }}>
-                        {myResults.find(r => r.exam_id === e.id && (r.violations || 0) >= 3)?.violations || 3} violation(s) detected — exam was auto-submitted.
-                        You must contact your instructor if you believe this was a mistake.
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {(isStaff || isStudent) && (
-            <div style={{marginTop:'40px'}}>
-              <div style={{
-                display:'flex', justifyContent:'space-between',
-                alignItems:'center', flexWrap:'wrap', gap:'10px',
-                marginBottom:'15px'
-              }}>
-                <h3 style={{margin:0}}>
-                  {isStudent ? '📊 My Exam Results' : '📊 My Exams — Student Results'} ({filteredResults.length})
-                </h3>
-
-                {isStaff && (
-                  <div style={{display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap'}}>
-                    <select value={filterYear} onChange={e=>setFilterYear(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
-                      style={{padding:'8px', borderRadius:'6px', border:'1px solid #ccc'}}>
-                      <option value="all">All Years</option>
-                      <option value={1}>Year 1</option>
-                      <option value={2}>Year 2</option>
-                      <option value={3}>Year 3</option>
-                      <option value={4}>Year 4</option>
-                    </select>
-
-                    <button className="primary" onClick={downloadExcel}
-                      style={{background:'#17a2b8', display:'inline-flex', alignItems:'center', gap:'6px'}}>
-                      <Download size={16}/> Download Excel
-                    </button>
-                  </div>
-                )}
+                <button className="primary" onClick={downloadExcel}
+                  style={{background:'#17a2b8', display:'inline-flex', alignItems:'center', gap:'6px'}}>
+                  <Download size={16}/> Download Excel
+                </button>
               </div>
+            )}
+          </div>
 
-              {filteredResults.length === 0 ? (
-                <p style={{color:'#66788a'}}>
-                  {isStudent
-                    ? 'You have not taken any exams yet.'
-                    : 'No results submitted for your exams yet.'}
-                </p>
-              ) : (
-                <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2200px' : '1500px'}}>
-                    <thead>
-                      <tr style={{background:'#102a43',color:'white'}}>
-                        <th style={{padding:'8px',textAlign:'left'}}>#</th>
-                        {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student Name</th>}
-                        {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student ID</th>}
-                        {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Year</th>}
-                        <th style={{padding:'8px',textAlign:'left'}}>Course Code</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Course Name</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Exam Title</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Date</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Total Mark</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Total Q</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Correct</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Wrong</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Unans.</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Score</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>%</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Grade</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Status</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Time Taken</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Violations</th>
-                        <th style={{padding:'8px',textAlign:'center'}}>Attempt</th>
-                        <th style={{padding:'8px',textAlign:'left'}}>Submitted At</th>
-                        {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Action</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredResults.map((r,i) => (
-                        <tr key={r.id} style={{borderBottom:'1px solid #e0e0e0'}}>
-                          <td style={{padding:'8px'}}>{i+1}</td>
-                          {isStaff && <td style={{padding:'8px'}}>{r.student}</td>}
-                          {isStaff && <td style={{padding:'8px'}}>{r.student_id || '—'}</td>}
-                          {isStaff && <td style={{padding:'8px',textAlign:'center'}}>{r.student_year || '—'}</td>}
-                          <td style={{padding:'8px'}}>{r.course_code || '—'}</td>
-                          <td style={{padding:'8px'}}>{r.course_name || '—'}</td>
-                          <td style={{padding:'8px'}}>{r.exam_title}</td>
-                          <td style={{padding:'8px'}}>{r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : '—'}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.total_mark ?? '—'}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.total}</td>
-                          <td style={{padding:'8px',textAlign:'center',color:'#28a745'}}>{r.correct}</td>
-                          <td style={{padding:'8px',textAlign:'center',color:'#dc3545'}}>{r.wrong}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.unanswered}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.earned_points}/{r.total_points}</td>
-                          <td style={{padding:'8px',textAlign:'center',fontWeight:'bold',color: r.score>=50?'#28a745':'#dc3545'}}>{r.score}%</td>
-                          <td style={{padding:'8px',textAlign:'center',fontWeight:'bold'}}>{r.grade}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>
-                            {(r.violations || 0) >= 3 ? (
-                              <span style={{
-                                padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
-                                background:'#dc3545',color:'white'
-                              }}>
-                                🚫 Terminated
-                              </span>
-                            ) : (
-                              <span style={{
-                                padding:'2px 8px',borderRadius:'10px',fontSize:'11px',
-                                background: r.status==='Passed'?'#d4edda':'#f8d7da',
-                                color: r.status==='Passed'?'#155724':'#721c24'
-                              }}>{r.status}</span>
-                            )}
-                          </td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{fmtTime(r.time_taken)}</td>
-                          <td style={{padding:'8px',textAlign:'center'}}>
-                            <span style={{
-                              padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'600',
-                              background: (r.violations||0) >= 3 ? '#f8d7da' : (r.violations||0) > 0 ? '#fff3cd' : '#eaf4fb',
-                              color: (r.violations||0) >= 3 ? '#721c24' : (r.violations||0) > 0 ? '#856404' : '#1769aa'
-                            }}>
-                              {r.violations || 0}
-                            </span>
-                          </td>
-                          <td style={{padding:'8px',textAlign:'center'}}>{r.attempt_number || 1}</td>
-                          <td style={{padding:'8px',fontSize:'11px',color:'#66788a'}}>
-                            {r.submitted_at ? new Date(r.submitted_at).toLocaleString() : '—'}
-                          </td>
-                          {isStaff && (
-                            <td style={{padding:'8px',textAlign:'center'}}>
-                              <button
-                                onClick={async () => {
-                                  if (!confirm(`Delete result for ${r.student}?`)) return;
-                                  const { error } = await supabase.from('exam_results').delete().eq('id', r.id);
-                                  if (error) return alert(error.message);
-                                  setResults(prev => prev.filter(x => x.id !== r.id));
-                                }}
-                                style={{
-                                  background: '#dc3545', color: 'white',
-                                  border: 'none', padding: '5px 12px',
-                                  borderRadius: '6px', cursor: 'pointer', fontSize: '12px'
-                                }}
-                              >
-                                🗑️ Delete
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+          {filteredResults.length === 0 ? (
+            <p style={{color:'#66788a'}}>
+              {isStudent
+                ? 'You have not taken any exams yet.'
+                : 'No results submitted for your exams yet.'}
+            </p>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2200px' : '1500px'}}>
+                <thead>
+                  <tr style={{background:'#102a43',color:'white'}}>
+                    <th style={{padding:'8px',textAlign:'left'}}>#</th>
+                    {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student Name</th>}
+                    {isStaff && <th style={{padding:'8px',textAlign:'left'}}>Student ID</th>}
+                    {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Year</th>}
+                    <th style={{padding:'8px',textAlign:'left'}}>Course Code</th>
+                    <th style={{padding:'8px',textAlign:'left'}}>Course Name</th>
+                    <th style={{padding:'8px',textAlign:'left'}}>Exam Title</th>
+                    <th style={{padding:'8px',textAlign:'left'}}>Date</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Total Mark</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Total Q</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Correct</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Wrong</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Unans.</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Score</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>%</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Grade</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Status</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Time Taken</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Violations</th>
+                    <th style={{padding:'8px',textAlign:'center'}}>Attempt</th>
+                    <th style={{padding:'8px',textAlign:'left'}}>Submitted At</th>
+                    {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Action</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredResults.map((r,i) => (
+                    <tr key={r.id} style={{borderBottom:'1px solid #e0e0e0'}}>
+                      <td style={{padding:'8px'}}>{i+1}</td>
+                      {isStaff && <td style={{padding:'8px'}}>{r.student}</td>}
+                      {isStaff && <td style={{padding:'8px'}}>{r.student_id || '—'}</td>}
+                      {isStaff && <td style={{padding:'8px',textAlign:'center'}}>{r.student_year || '—'}</td>}
+                      <td style={{padding:'8px'}}>{r.course_code || '—'}</td>
+                      <td style={{padding:'8px'}}>{r.course_name || '—'}</td>
+                      <td style={{padding:'8px'}}>{r.exam_title}</td>
+                      <td style={{padding:'8px'}}>{r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : '—'}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{r.total_mark ?? '—'}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{r.total}</td>
+                      <td style={{padding:'8px',textAlign:'center',color:'#28a745'}}>{r.correct}</td>
+                      <td style={{padding:'8px',textAlign:'center',color:'#dc3545'}}>{r.wrong}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{r.unanswered}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{r.earned_points}/{r.total_points}</td>
+                      <td style={{padding:'8px',textAlign:'center',fontWeight:'bold',color: r.score>=50?'#28a745':'#dc3545'}}>{r.score}%</td>
+                      <td style={{padding:'8px',textAlign:'center',fontWeight:'bold'}}>{r.grade}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>
+                        {(r.violations || 0) >= 3 ? (
+                          <span style={{
+                            padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
+                            background:'#dc3545',color:'white'
+                          }}>
+                            🚫 Terminated
+                          </span>
+                        ) : (
+                          <span style={{
+                            padding:'2px 8px',borderRadius:'10px',fontSize:'11px',
+                            background: r.status==='Passed'?'#d4edda':'#f8d7da',
+                            color: r.status==='Passed'?'#155724':'#721c24'
+                          }}>{r.status}</span>
+                        )}
+                      </td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{fmtTime(r.time_taken)}</td>
+                      <td style={{padding:'8px',textAlign:'center'}}>
+                        <span style={{
+                          padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'600',
+                          background: (r.violations||0) >= 3 ? '#f8d7da' : (r.violations||0) > 0 ? '#fff3cd' : '#eaf4fb',
+                          color: (r.violations||0) >= 3 ? '#721c24' : (r.violations||0) > 0 ? '#856404' : '#1769aa'
+                        }}>
+                          {r.violations || 0}
+                        </span>
+                      </td>
+                      <td style={{padding:'8px',textAlign:'center'}}>{r.attempt_number || 1}</td>
+                      <td style={{padding:'8px',fontSize:'11px',color:'#66788a'}}>
+                        {r.submitted_at ? new Date(r.submitted_at).toLocaleString() : '—'}
+                      </td>
+                      {isStaff && (
+                        <td style={{padding:'8px',textAlign:'center'}}>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Delete result for ${r.student}?`)) return;
+                              const { error } = await supabase.from('exam_results').delete().eq('id', r.id);
+                              if (error) return alert(error.message);
+                              setResults(prev => prev.filter(x => x.id !== r.id));
+                            }}
+                            style={{
+                              background: '#dc3545', color: 'white',
+                              border: 'none', padding: '5px 12px',
+                              borderRadius: '6px', cursor: 'pointer', fontSize: '12px'
+                            }}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -5354,6 +5473,9 @@ function CourseModal({ course, close, uploadMaterial, materials, toggleLock, del
   );
 }
 
+// ============================================
+// STAFF
+// ============================================
 function Staff({ profilePic, saveProfilePic, removeProfilePic, user, meta, leadership, setLeadership }) {
   const isStaff = meta?.role === 'staff';
   const [allStaff, setAllStaff] = useState([]);
