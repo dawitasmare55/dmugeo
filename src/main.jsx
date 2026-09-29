@@ -3797,8 +3797,7 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM — staff restriction + fullscreen anti-cheat
-// with non-blocking fullscreen + question safety guard
+// EXAM SYSTEM — Forced fullscreen, 3-violation auto-submit
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -3826,96 +3825,191 @@ function ExamSystem({ user, meta }) {
   const [violations, setViolations] = useState(0);
   const [showWarning, setShowWarning] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
+  const [autoSubmitReason, setAutoSubmitReason] = useState('');
+
+  // 🔴 Violation threshold — auto-submit at this number
+  const VIOLATION_THRESHOLD = 3;
 
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
 
+  // Refs so event listeners always see latest values
+  const violationsRef = useRef(0);
+  const submittedRef = useRef(false);
+  const currentExamRef = useRef(null);
+  const answersRef = useRef({});
+  const qIndexRef = useRef(0);
+  const timeLeftRef = useRef(0);
+  const metaRef = useRef(meta);
+  const userRef = useRef(user);
+  const autoSubmitLockRef = useRef(false);
+
+  useEffect(() => { violationsRef.current = violations; }, [violations]);
+  useEffect(() => { submittedRef.current = submitted; }, [submitted]);
+  useEffect(() => { currentExamRef.current = currentExam; }, [currentExam]);
+  useEffect(() => { answersRef.current = answers; }, [answers]);
+  useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
+  useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
+  useEffect(() => { metaRef.current = meta; }, [meta]);
+  useEffect(() => { userRef.current = user; }, [user]);
+
   const refresh = async () => {
     const { data: e } = await supabase.from('exams').select('*').order('created_at', { ascending: false });
     const { data: r } = await supabase.from('exam_results').select('*').order('submitted_at', { ascending: false });
-    setExams(e || []); setResults(r || []);
+    setExams(e || []);
+    setResults(r || []);
   };
   useEffect(() => { refresh(); }, []);
 
-  // Timer
+  // ============================================
+  // FORCED FULLSCREEN — runs AFTER exam UI mounts
+  // ============================================
+  useEffect(() => {
+    if (!currentExam || submitted || !isStudent) return;
+
+    let cancelled = false;
+
+    const goFullscreen = async () => {
+      if (cancelled) return;
+      try {
+        if (!document.fullscreenElement) {
+          const el = document.documentElement;
+          const req = el.requestFullscreen?.({ navigationUI: 'hide' });
+          if (req && typeof req.catch === 'function') {
+            await req.catch(err => {
+              console.warn('Fullscreen request rejected:', err);
+              if (!cancelled) {
+                setWarningMessage(
+                  '⚠️ Automatic fullscreen was blocked. Press F11 (or use your browser\'s fullscreen button) to enter fullscreen, then click Continue.'
+                );
+                setShowWarning(true);
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Fullscreen request threw:', e);
+      }
+    };
+
+    // Wait a tick so the exam DOM has painted, then request fullscreen
+    const t = setTimeout(goFullscreen, 120);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [currentExam, submitted, isStudent]);
+
+  // ============================================
+  // TIMER
+  // ============================================
   useEffect(() => {
     if (!currentExam || submitted || timeLeft === null || timeLeft <= 0) return;
     const t = setInterval(() => {
       setTimeLeft(prev => {
-        if (prev <= 1) { clearInterval(t); doSubmit(true); return 0; }
+        if (prev <= 1) {
+          clearInterval(t);
+          doSubmit(true, 'time_expired');
+          return 0;
+        }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentExam, timeLeft, submitted]);
 
   // ============================================
-  // ANTI-CHEAT: fullscreen, tab-switch, copy, right-click, devtools
+  // ANTI-CHEAT — 3-violation threshold + grace period
   // ============================================
   useEffect(() => {
-    if (!currentExam || submitted) return;
+    if (!currentExam || submitted || !isStudent) return;
+
+    const mountedAt = Date.now();
+    const GRACE_PERIOD_MS = 1500; // ignore fullscreen events while it is settling
+
+    const triggerAutoSubmit = (reason) => {
+      if (autoSubmitLockRef.current) return;
+      autoSubmitLockRef.current = true;
+      setAutoSubmitReason(reason);
+      setTimeout(() => {
+        doSubmit(true, reason);
+      }, 400);
+    };
 
     const bumpViolation = (message) => {
-      setViolations(prev => {
-        const next = prev + 1;
-        setWarningMessage(message);
-        setShowWarning(true);
-        // Auto-submit at 5 violations
-        if (next >= 5) {
-          setTimeout(() => {
-            doSubmit(true);
-          }, 300);
-        }
-        return next;
-      });
+      if (submittedRef.current) return;
+      if (Date.now() - mountedAt < GRACE_PERIOD_MS) return;
+
+      const next = violationsRef.current + 1;
+      violationsRef.current = next;
+      setViolations(next);
+      setWarningMessage(message);
+      setShowWarning(true);
+
+      if (next >= VIOLATION_THRESHOLD) {
+        triggerAutoSubmit('violation_limit');
+      }
     };
 
     const onFsChange = () => {
       if (!document.fullscreenElement) {
-        bumpViolation('⚠️ You exited fullscreen mode. This has been recorded.');
+        bumpViolation(
+          `You exited fullscreen mode. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`
+        );
       }
     };
 
     const onVisibility = () => {
       if (document.hidden) {
-        bumpViolation('⚠️ You left the exam tab. This has been recorded.');
+        bumpViolation(
+          `You left the exam tab. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`
+        );
       }
     };
 
     const onBlur = () => {
-      bumpViolation('⚠️ You left the exam window. This has been recorded.');
+      bumpViolation(
+        `You left the exam window. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`
+      );
     };
 
     const onCopy = (e) => {
       e.preventDefault();
-      bumpViolation('⚠️ Copying is not allowed during the exam.');
+      bumpViolation(
+        `Copying is not allowed. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`
+      );
     };
 
     const onContext = (e) => {
       e.preventDefault();
-      bumpViolation('⚠️ Right-click is disabled during the exam.');
+      bumpViolation(
+        `Right-click is disabled. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`
+      );
     };
 
     const onKey = (e) => {
       const key = (e.key || '').toLowerCase();
+
       if (e.key === 'F12') {
         e.preventDefault();
-        bumpViolation('⚠️ Developer tools are disabled.');
+        bumpViolation(`Developer tools are disabled. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`);
         return;
       }
       if (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(key)) {
         e.preventDefault();
-        bumpViolation('⚠️ Developer tools are disabled.');
+        bumpViolation(`Developer tools are disabled. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`);
         return;
       }
       if (e.ctrlKey && key === 'u') {
         e.preventDefault();
-        bumpViolation('⚠️ Viewing source is disabled.');
+        bumpViolation(`Viewing source is disabled. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`);
         return;
       }
       if (e.ctrlKey && ['c','v','a','p','s'].includes(key)) {
         e.preventDefault();
-        bumpViolation('⚠️ That keyboard shortcut is disabled during the exam.');
+        bumpViolation(`That shortcut is disabled during the exam. Violation ${violationsRef.current + 1} of ${VIOLATION_THRESHOLD}.`);
         return;
       }
     };
@@ -3935,8 +4029,12 @@ function ExamSystem({ user, meta }) {
       document.removeEventListener('contextmenu', onContext);
       window.removeEventListener('keydown', onKey);
     };
-  }, [currentExam, submitted]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentExam, submitted, isStudent]);
 
+  // ============================================
+  // HELPERS
+  // ============================================
   const addQ = () => {
     const nid = Math.max(...questions.map(q => q.id)) + 1;
     setQuestions([...questions, { id: nid, text: '', choices: ['','','',''], correctAnswer: '', points: 1 }]);
@@ -3949,7 +4047,7 @@ function ExamSystem({ user, meta }) {
   // BULK IMPORT PARSER
   // ============================================
   const parseBulkQuestions = (text) => {
-    const questions = [];
+    const parsed = [];
     const errors = [];
 
     const lines = text
@@ -3969,22 +4067,16 @@ function ExamSystem({ user, meta }) {
 
     const pushCurrent = () => {
       if (!current) return;
-      if (!current.text) {
-        errors.push('A question has no text.');
-        current = null;
-        return;
-      }
+      if (!current.text) { errors.push('A question has no text.'); current = null; return; }
       if (current.choices.length < 2) {
         errors.push(`Question "${current.text.slice(0, 40)}..." has fewer than 2 choices.`);
-        current = null;
-        return;
+        current = null; return;
       }
       if (!current.correctAnswer) {
         errors.push(`Question "${current.text.slice(0, 40)}..." is missing the Answer line.`);
-        current = null;
-        return;
+        current = null; return;
       }
-      questions.push(current);
+      parsed.push(current);
       current = null;
     };
 
@@ -3995,7 +4087,7 @@ function ExamSystem({ user, meta }) {
         if (idx >= 0 && idx < current.choices.length) {
           current.correctAnswer = current.choices[idx];
         } else {
-          errors.push(`Answer "${answerMatch[1]}" does not match any choice in question "${current.text.slice(0, 40)}..."`);
+          errors.push(`Answer "${answerMatch[1]}" does not match any choice in "${current.text.slice(0, 40)}..."`);
         }
         continue;
       }
@@ -4026,9 +4118,9 @@ function ExamSystem({ user, meta }) {
     }
 
     pushCurrent();
-    questions.forEach((q, i) => { q.id = i + 1; });
+    parsed.forEach((q, i) => { q.id = i + 1; });
 
-    return { questions, errors };
+    return { questions: parsed, errors };
   };
 
   const handleBulkImport = () => {
@@ -4043,7 +4135,6 @@ function ExamSystem({ user, meta }) {
       );
       return;
     }
-
     if (parsed.length === 0) {
       setBulkError('No questions detected. Make sure each question starts with "1.", "2.", etc.');
       return;
@@ -4075,7 +4166,8 @@ function ExamSystem({ user, meta }) {
   };
 
   const resetForm = () => {
-    setTitle(''); setQuestions([{ id: 1, text: '', choices: ['','','',''], correctAnswer: '', points: 1 }]);
+    setTitle('');
+    setQuestions([{ id: 1, text: '', choices: ['','','',''], correctAnswer: '', points: 1 }]);
     setEditingId(null); setShowForm(false);
     setCourseCode(''); setCourseName(''); setExamType('Midterm'); setTargetYear(2);
     setTotalMark(100);
@@ -4106,11 +4198,14 @@ function ExamSystem({ user, meta }) {
   };
 
   // ============================================
-  // FIXED: startExam — fullscreen is fire-and-forget
+  // START EXAM (state only — fullscreen handled by effect above)
   // ============================================
   const startExam = async (exam) => {
     setViolations(0);
+    violationsRef.current = 0;
+    autoSubmitLockRef.current = false;
     setShowWarning(false);
+    setAutoSubmitReason('');
 
     const shuffleArray = (arr) => [...arr].sort(() => Math.random() - 0.5);
     const shuffledExam = {
@@ -4121,28 +4216,14 @@ function ExamSystem({ user, meta }) {
       }))
     };
 
-    // ⚡ Request fullscreen FIRST, fire-and-forget (never blocks)
-    try {
-      const el = document.documentElement;
-      const req = el.requestFullscreen && el.requestFullscreen();
-      if (req && typeof req.catch === 'function') {
-        req.catch(err => {
-          console.warn('Fullscreen request rejected:', err);
-        });
-      }
-    } catch (e) {
-      console.warn('Fullscreen request threw:', e);
-    }
-
-    // ⚡ Immediately set exam state so UI renders
     setCurrentExam(shuffledExam);
     setSubmitted(false);
+    submittedRef.current = false;
     setQIndex(0);
     setAnswers({});
     setStartTime(Date.now());
     setTimeLeft(exam.duration * 60);
 
-    // Load saved progress in background
     (async () => {
       try {
         const { data } = await supabase
@@ -4156,6 +4237,10 @@ function ExamSystem({ user, meta }) {
           setAnswers(data.answers || {});
           setQIndex(data.current_index || 0);
           setTimeLeft(data.time_left || exam.duration * 60);
+          if (data.violations != null) {
+            setViolations(data.violations);
+            violationsRef.current = data.violations;
+          }
         } else {
           await supabase.from('exam_progress').insert([{
             user_id: user.id,
@@ -4163,7 +4248,8 @@ function ExamSystem({ user, meta }) {
             exam_id: exam.id,
             answers: {},
             current_index: 0,
-            time_left: exam.duration * 60
+            time_left: exam.duration * 60,
+            violations: 0
           }]);
         }
       } catch (e) {
@@ -4172,17 +4258,19 @@ function ExamSystem({ user, meta }) {
     })();
   };
 
+  // Persist progress (answers + violations) every 5s
   useEffect(() => {
     if (!currentExam || submitted) return;
     const t = setInterval(async () => {
       await supabase.from('exam_progress').upsert({
         user_id: user.id, student: meta?.name,
         exam_id: currentExam.id,
-        answers, current_index: qIndex, time_left: timeLeft
+        answers, current_index: qIndex, time_left: timeLeft,
+        violations: violationsRef.current
       }, { onConflict: 'user_id,exam_id' });
     }, 5000);
     return () => clearInterval(t);
-  }, [currentExam, answers, qIndex, timeLeft, submitted]);
+  }, [currentExam, answers, qIndex, timeLeft, submitted, user, meta]);
 
   const computeGrade = (pct) => {
     if (pct >= 90) return 'A+';
@@ -4197,66 +4285,97 @@ function ExamSystem({ user, meta }) {
     return 'F';
   };
 
-  const doSubmit = async (auto = false) => {
-    if (submitted) return;
-    if (!currentExam?.questions) return;
-    const total = currentExam.questions.length;
-    const answered = Object.keys(answers).length;
-    if (!auto && answered < total && !confirm(`Answered ${answered}/${total}. Submit anyway?`)) return;
+  // ============================================
+  // SUBMIT
+  // ============================================
+  const doSubmit = async (auto = false, reason = 'manual') => {
+    if (submittedRef.current) return;
+    const exam = currentExamRef.current;
+    if (!exam?.questions) return;
+
+    submittedRef.current = true;
+
+    const total = exam.questions.length;
+    const answered = Object.keys(answersRef.current || {}).length;
+
+    if (!auto && answered < total) {
+      const ok = confirm(`Answered ${answered}/${total}. Submit anyway?`);
+      if (!ok) { submittedRef.current = false; return; }
+    }
+
     let totalPts = 0, earned = 0, correct = 0, wrong = 0;
-    currentExam.questions.forEach(q => {
+    exam.questions.forEach(q => {
       const p = q.points || 1;
       totalPts += p;
-      if (answers[q.id] === q.correctAnswer) { correct++; earned += p; }
-      else if (answers[q.id] != null) { wrong++; }
+      if (answersRef.current[q.id] === q.correctAnswer) { correct++; earned += p; }
+      else if (answersRef.current[q.id] != null) { wrong++; }
     });
+
     const unanswered = total - correct - wrong;
     const pct = Math.round((earned / totalPts) * 100);
     const grade = computeGrade(pct);
     const status = pct >= 50 ? 'Passed' : 'Failed';
-    const timeTaken = currentExam.duration * 60 - (timeLeft || 0);
+    const timeTaken = exam.duration * 60 - (timeLeftRef.current || 0);
 
     const { count } = await supabase.from('exam_results')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('exam_id', currentExam.id);
+      .eq('user_id', userRef.current.id)
+      .eq('exam_id', exam.id);
     const attempt = (count || 0) + 1;
 
     await supabase.from('exam_results').insert([{
-      exam_id: currentExam.id, exam_title: currentExam.title,
-      student: meta?.name, student_id: meta?.student_id, student_year: meta?.year,
-      course_code: currentExam.course_code, course_name: currentExam.course_name,
-      exam_type: currentExam.exam_type,
-      total_mark: currentExam.total_mark || 100,
+      exam_id: exam.id, exam_title: exam.title,
+      student: metaRef.current?.name,
+      student_id: metaRef.current?.student_id,
+      student_year: metaRef.current?.year,
+      course_code: exam.course_code,
+      course_name: exam.course_name,
+      exam_type: exam.exam_type,
+      total_mark: exam.total_mark || 100,
       score: pct, correct, total, wrong, unanswered,
       total_points: totalPts, earned_points: earned,
       grade, status, time_taken: timeTaken, attempt_number: attempt,
-      answers, user_id: user.id,
-      violations: violations,
+      answers: answersRef.current,
+      user_id: userRef.current.id,
+      violations: violationsRef.current,
+      auto_submitted: !!auto,
+      auto_submit_reason: auto ? reason : null,
     }]);
-    await supabase.from('exam_progress').delete().eq('user_id', user.id).eq('exam_id', currentExam.id);
+
+    await supabase.from('exam_progress').delete()
+      .eq('user_id', userRef.current.id)
+      .eq('exam_id', exam.id);
 
     try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      }
+      if (document.fullscreenElement) await document.exitFullscreen();
     } catch (e) { /* ignore */ }
 
     setSubmitted(true);
-    setTimeout(() => { setCurrentExam(null); setSubmitted(false); refresh(); }, 2000);
+    setTimeout(() => {
+      setCurrentExam(null);
+      setSubmitted(false);
+      submittedRef.current = false;
+      autoSubmitLockRef.current = false;
+      refresh();
+    }, 2500);
   };
 
   const fmt = (s) => {
     if (s === null || s === undefined) return '--:--';
-    const m = Math.floor(s / 60); const x = s % 60;
+    const m = Math.floor(s / 60);
+    const x = s % 60;
     return `${m}:${x.toString().padStart(2,'0')}`;
   };
   const fmtTime = (sec) => {
     if (!sec) return '0m 0s';
-    const m = Math.floor(sec / 60); const s = sec % 60;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
     return `${m}m ${s}s`;
   };
 
+  // ============================================
+  // EXCEL EXPORT (includes violations)
+  // ============================================
   const downloadExcel = () => {
     const myExamIds = exams.filter(e => e.user_id === user.id).map(e => e.id);
     const scoped = results.filter(r => myExamIds.includes(r.exam_id));
@@ -4282,6 +4401,8 @@ function ExamSystem({ user, meta }) {
       'Percentage': `${r.score || 0}%`,
       'Grade': r.grade || '',
       'Violations': r.violations || 0,
+      'Auto-Submitted': r.auto_submitted ? 'Yes' : 'No',
+      'Auto-Submit Reason': r.auto_submit_reason || '',
       'Status': r.status || '',
       'Time Taken': fmtTime(r.time_taken),
       'Attempt Number': r.attempt_number || 1,
@@ -4292,8 +4413,8 @@ function ExamSystem({ user, meta }) {
     worksheet['!cols'] = [
       { wch: 4 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 28 },
       { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-      { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 10 },
-      { wch: 12 }, { wch: 10 }, { wch: 20 }
+      { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 14 },
+      { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 20 }
     ];
     const workbook = XLSX.utils.book_new();
     const sheetName = filterYear === 'all' ? 'All Results' : `Year ${filterYear}`;
@@ -4304,25 +4425,23 @@ function ExamSystem({ user, meta }) {
   };
 
   // ============================================
-  // STUDENT EXAM-TAKING SCREEN (with safety guard)
+  // STUDENT EXAM-TAKING SCREEN
   // ============================================
   if (currentExam && isStudent && !submitted) {
     const q = currentExam.questions?.[qIndex];
 
-    // ⚡ Safety fallback — never show a white page
     if (!q) {
       return (
         <div style={{ textAlign: 'center', padding: '40px', background: 'white', borderRadius: '12px' }}>
           <h2 style={{ color: '#dc3545' }}>⚠️ Could not load question</h2>
-          <p style={{ color: '#66788a' }}>
-            The exam data may be corrupted. Please contact your instructor.
-          </p>
+          <p style={{ color: '#66788a' }}>The exam data may be corrupted. Please contact your instructor.</p>
           <button
             className="secondary"
             onClick={async () => {
               try { if (document.fullscreenElement) await document.exitFullscreen(); } catch(e){}
               setCurrentExam(null);
               setSubmitted(false);
+              submittedRef.current = false;
             }}
             style={{ marginTop: '15px' }}
           >
@@ -4332,29 +4451,47 @@ function ExamSystem({ user, meta }) {
       );
     }
 
+    const violationsLeft = Math.max(0, VIOLATION_THRESHOLD - violations);
+    const isFinalWarning = violationsLeft === 1;
+
     return (
-      <div style={{ marginTop: '30px', background: 'white', padding: '25px', borderRadius: '12px', position: 'relative' }}>
-        {violations > 0 && (
-          <div style={{
-            background: '#f8d7da',
-            color: '#721c24',
-            padding: '10px 14px',
-            borderRadius: '8px',
-            marginBottom: '16px',
-            fontSize: '13px',
-            fontWeight: '600',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: '8px'
-          }}>
-            <span>⚠️ Violations detected: <strong>{violations} / 5</strong></span>
-            <span style={{ fontSize: '11px', opacity: 0.8 }}>
-              Auto-submit at 5 violations
-            </span>
-          </div>
-        )}
+      <div style={{
+        marginTop: '30px',
+        background: 'white',
+        padding: '25px',
+        borderRadius: '12px',
+        position: 'relative',
+        minHeight: '60vh'
+      }}>
+        {/* Banner showing X / 3 violations */}
+        <div style={{
+          background: violations === 0 ? '#d4edda' : (isFinalWarning ? '#ffe0b2' : '#f8d7da'),
+          color: violations === 0 ? '#155724' : (isFinalWarning ? '#7a4a00' : '#721c24'),
+          padding: '12px 16px',
+          borderRadius: '10px',
+          marginBottom: '18px',
+          fontSize: '14px',
+          fontWeight: '700',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '10px',
+          border: '1px solid rgba(0,0,0,0.08)'
+        }}>
+          <span>
+            {violations === 0
+              ? '🔒 Exam is monitored. Do not leave fullscreen.'
+              : `⚠️ Violations: ${violations} / ${VIOLATION_THRESHOLD}`}
+          </span>
+          <span style={{ fontSize: '12px', fontWeight: '600', opacity: 0.85 }}>
+            {violations === 0
+              ? `Auto-submit at ${VIOLATION_THRESHOLD} violations`
+              : isFinalWarning
+                ? '🚨 FINAL WARNING — one more violation will auto-submit your exam!'
+                : `Auto-submit at ${VIOLATION_THRESHOLD} violations`}
+          </span>
+        </div>
 
         <h3>{currentExam.title}</h3>
         <p style={{ color: '#66788a' }}>
@@ -4375,9 +4512,10 @@ function ExamSystem({ user, meta }) {
         <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
           <button className="secondary" onClick={()=>setQIndex(qIndex-1)} disabled={qIndex===0}>← Prev</button>
           <button className="secondary" onClick={()=>setQIndex(qIndex+1)} disabled={qIndex===currentExam.questions.length-1}>Next →</button>
-          <button className="primary" onClick={()=>doSubmit(false)} style={{background:'#28a745'}}>Submit</button>
+          <button className="primary" onClick={()=>doSubmit(false, 'manual')} style={{background:'#28a745'}}>Submit</button>
         </div>
 
+        {/* Popup warning after each violation */}
         {showWarning && (
           <div
             style={{
@@ -4401,29 +4539,37 @@ function ExamSystem({ user, meta }) {
                 width: '100%',
                 textAlign: 'center',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-                borderTop: '6px solid #dc3545'
+                borderTop: `6px solid ${isFinalWarning ? '#dc3545' : '#ffc107'}`
               }}
             >
-              <div style={{ fontSize: '52px', marginBottom: '10px' }}>⚠️</div>
-              <h2 style={{ margin: '0 0 10px', color: '#721c24' }}>Warning</h2>
+              <div style={{ fontSize: '52px', marginBottom: '10px' }}>
+                {isFinalWarning ? '🚨' : '⚠️'}
+              </div>
+              <h2 style={{ margin: '0 0 10px', color: isFinalWarning ? '#721c24' : '#856404' }}>
+                {isFinalWarning ? 'FINAL WARNING' : 'Warning'}
+              </h2>
               <p style={{ color: '#333', fontSize: '15px', lineHeight: '1.6', marginBottom: '14px' }}>
                 {warningMessage}
               </p>
               <div style={{
-                background: '#f8d7da',
-                color: '#721c24',
-                padding: '10px',
+                background: isFinalWarning ? '#f8d7da' : '#fff3cd',
+                color: isFinalWarning ? '#721c24' : '#856404',
+                padding: '12px',
                 borderRadius: '8px',
                 fontSize: '13px',
                 marginBottom: '16px',
-                fontWeight: '600'
+                fontWeight: '700'
               }}>
-                Violation {violations} of 5 — exam auto-submits at 5.
+                Violation {violations} of {VIOLATION_THRESHOLD}
+                <br />
+                {isFinalWarning
+                  ? 'One more violation → exam auto-submits.'
+                  : `${violationsLeft} more violation${violationsLeft === 1 ? '' : 's'} → auto-submit.`}
               </div>
               <button
                 className="primary"
                 onClick={() => setShowWarning(false)}
-                style={{ width: '100%', padding: '12px' }}
+                style={{ width: '100%', padding: '12px', background: isFinalWarning ? '#dc3545' : '#1769aa' }}
               >
                 I Understand — Continue Exam
               </button>
@@ -4438,11 +4584,26 @@ function ExamSystem({ user, meta }) {
     return (
       <div style={{textAlign:'center',padding:'40px',background:'white',borderRadius:'12px'}}>
         <h2 style={{color:'#28a745'}}>✅ Exam Submitted!</h2>
-        <p style={{color:'#66788a'}}>Your answers are saved. Staff can now see your result.</p>
+        <p style={{color:'#66788a'}}>
+          Your answers are saved. Staff can now see your result.
+          {autoSubmitReason === 'violation_limit' && (
+            <> <br /><span style={{ color: '#dc3545', fontWeight: '600' }}>
+              ⚠️ Auto-submitted because you reached {VIOLATION_THRESHOLD} violations.
+            </span></>
+          )}
+          {autoSubmitReason === 'time_expired' && (
+            <> <br /><span style={{ color: '#856404', fontWeight: '600' }}>
+              ⏰ Time expired — exam was auto-submitted.
+            </span></>
+          )}
+        </p>
       </div>
     );
   }
 
+  // ============================================
+  // FILTERED RESULTS
+  // ============================================
   const filteredResults = useMemo(() => {
     if (isStudent) {
       return results.filter(r => r.user_id === user.id);
@@ -4456,6 +4617,9 @@ function ExamSystem({ user, meta }) {
 
   const myExams = exams.filter(e => e.user_id === user?.id);
 
+  // ============================================
+  // MAIN RENDER (staff create/list + student list + results)
+  // ============================================
   return (
     <div style={{ marginTop: '40px', padding: '20px', background: 'white', borderRadius: '12px' }}>
       <h2 style={{ color: '#102a43' }}>📋 Exam System</h2>
@@ -4480,9 +4644,7 @@ function ExamSystem({ user, meta }) {
               {bulkOpen && (
                 <div style={{
                   background: 'linear-gradient(135deg, #eaf4fb, #ffffff)',
-                  padding: '22px',
-                  borderRadius: '12px',
-                  marginBottom: '25px',
+                  padding: '22px', borderRadius: '12px', marginBottom: '25px',
                   border: '2px solid #17a2b8'
                 }}>
                   <h3 style={{ marginTop: 0, color: '#102a43' }}>📋 Paste Exam Questions</h3>
@@ -4490,14 +4652,9 @@ function ExamSystem({ user, meta }) {
                     Paste your full exam below. Use this format:
                   </p>
                   <pre style={{
-                    background: '#102a43',
-                    color: '#e1b84b',
-                    padding: '14px',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                    lineHeight: '1.6',
-                    overflowX: 'auto',
-                    marginBottom: '14px'
+                    background: '#102a43', color: '#e1b84b', padding: '14px',
+                    borderRadius: '8px', fontSize: '12px', lineHeight: '1.6',
+                    overflowX: 'auto', marginBottom: '14px'
                   }}>{`1. What is the hardest mineral?
 A) Quartz
 B) Diamond
@@ -4511,22 +4668,11 @@ B) NaCl
 C) CaCO3
 Answer: A`}</pre>
 
-                  <p style={{ color: '#66788a', fontSize: '12px', marginBottom: '14px' }}>
-                    ✓ Questions: <code>1.</code> <code>2.</code> <code>Q1.</code> <code>Q1)</code><br/>
-                    ✓ Choices: <code>A)</code> <code>A.</code> <code>a)</code> (2–5 choices)<br/>
-                    ✓ Answer: <code>Answer: B</code> or <code>Ans: B</code> or <code>Correct: B</code>
-                  </p>
-
                   {bulkError && (
                     <div style={{
-                      background: '#f8d7da',
-                      color: '#721c24',
-                      padding: '12px',
-                      borderRadius: '8px',
-                      marginBottom: '14px',
-                      fontSize: '13px',
-                      whiteSpace: 'pre-wrap',
-                      fontFamily: 'monospace'
+                      background: '#f8d7da', color: '#721c24', padding: '12px',
+                      borderRadius: '8px', marginBottom: '14px', fontSize: '13px',
+                      whiteSpace: 'pre-wrap', fontFamily: 'monospace'
                     }}>
                       {bulkError}
                     </div>
@@ -4536,71 +4682,19 @@ Answer: A`}</pre>
                     value={bulkText}
                     onChange={(e) => setBulkText(e.target.value)}
                     rows="14"
-                    placeholder={`Paste your exam questions here...\n\nExample:\n1. What is the hardest mineral?\nA) Quartz\nB) Diamond\nC) Topaz\nD) Corundum\nAnswer: B`}
+                    placeholder={`Paste your exam questions here...`}
                     style={{
-                      width: '100%',
-                      padding: '14px',
-                      borderRadius: '8px',
-                      border: '1px solid #ccc',
-                      fontFamily: 'monospace',
-                      fontSize: '13px',
-                      lineHeight: '1.6',
-                      resize: 'vertical'
+                      width: '100%', padding: '14px', borderRadius: '8px',
+                      border: '1px solid #ccc', fontFamily: 'monospace',
+                      fontSize: '13px', lineHeight: '1.6', resize: 'vertical'
                     }}
                   />
 
                   <div style={{ marginTop: '14px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                    <button
-                      className="primary"
-                      onClick={handleBulkImport}
-                      disabled={!bulkText.trim()}
-                      style={{ background: '#28a745' }}
-                    >
-                      ✅ Parse & Import
+                    <button className="primary" onClick={handleBulkImport} disabled={!bulkText.trim()} style={{ background: '#28a745' }}>
+                      ✅ Parse &amp; Import
                     </button>
-                    <button
-                      className="secondary"
-                      onClick={() => { setBulkText(''); setBulkError(''); }}
-                    >
-                      Clear
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => {
-                        setBulkText(
-`1. What is the hardest mineral on Earth?
-A) Quartz
-B) Diamond
-C) Topaz
-D) Corundum
-Answer: B
-
-2. What is the chemical formula of quartz?
-A) SiO2
-B) NaCl
-C) CaCO3
-D) FeS2
-Answer: A
-
-3. Which era is known as the "Age of Reptiles"?
-A) Paleozoic
-B) Mesozoic
-C) Cenozoic
-D) Precambrian
-Answer: B
-
-4. What type of rock is formed from cooled magma?
-A) Sedimentary
-B) Metamorphic
-C) Igneous
-D) Clastic
-Answer: C`
-                        );
-                        setBulkError('');
-                      }}
-                    >
-                      📄 Load Sample
-                    </button>
+                    <button className="secondary" onClick={() => { setBulkText(''); setBulkError(''); }}>Clear</button>
                   </div>
                 </div>
               )}
@@ -4625,14 +4719,10 @@ Answer: C`
                     </div>
                     <div>
                       <label style={{fontSize:'13px',fontWeight:'600'}}>Total Mark</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={totalMark}
+                      <input type="number" min="1" value={totalMark}
                         onChange={e=>setTotalMark(parseInt(e.target.value)||0)}
                         placeholder="e.g. 100"
-                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}
-                      />
+                        style={{width:'100%',padding:'8px',borderRadius:'6px',border:'1px solid #ccc'}}/>
                     </div>
                     <div>
                       <label style={{fontSize:'13px',fontWeight:'600'}}>Course Code</label>
@@ -4687,18 +4777,10 @@ Answer: C`
               )}
 
               <h3>Manage Exams</h3>
-              <p style={{
-                color: '#66788a',
-                fontSize: '12px',
-                fontStyle: 'italic',
-                marginTop: '-10px',
-                marginBottom: '12px'
-              }}>
+              <p style={{ color: '#66788a', fontSize: '12px', fontStyle: 'italic', marginTop: '-10px', marginBottom: '12px' }}>
                 ℹ️ You are viewing only the exams you created. Other staff members' exams are hidden.
               </p>
-              {myExams.length === 0 && (
-                <p style={{color:'#66788a'}}>You haven't created any exams yet.</p>
-              )}
+              {myExams.length === 0 && (<p style={{color:'#66788a'}}>You haven't created any exams yet.</p>)}
               {myExams.map(e => (
                 <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
                   <div style={{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:'10px'}}>
@@ -4737,7 +4819,7 @@ Answer: C`
                     {e.course_code} — {e.course_name} • {e.exam_type} • {e.questions?.length} questions • {e.duration} min • Total Mark: {e.total_mark || '—'}
                   </p>
                   <p style={{margin:'4px 0',color:'#dc3545',fontSize:'12px',fontWeight:'600'}}>
-                    🔒 This exam is monitored. Exiting fullscreen, switching tabs, or copying will be recorded and may auto-submit your exam.
+                    🔒 Forced fullscreen. Exiting fullscreen, switching tabs, or copying will be recorded. Auto-submit at {VIOLATION_THRESHOLD} violations.
                   </p>
                   <button className="primary" onClick={()=>startExam(e)} style={{marginTop:'8px'}}>Start Exam</button>
                 </div>
@@ -4766,7 +4848,6 @@ Answer: C`
                       <option value={3}>Year 3</option>
                       <option value={4}>Year 4</option>
                     </select>
-
                     <button className="primary" onClick={downloadExcel}
                       style={{background:'#17a2b8', display:'inline-flex', alignItems:'center', gap:'6px'}}>
                       <Download size={16}/> Download Excel
@@ -4781,7 +4862,7 @@ Answer: C`
                 </p>
               ) : (
                 <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2200px' : '1500px'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2300px' : '1500px'}}>
                     <thead>
                       <tr style={{background:'#102a43',color:'white'}}>
                         <th style={{padding:'8px',textAlign:'left'}}>#</th>
@@ -4801,6 +4882,7 @@ Answer: C`
                         <th style={{padding:'8px',textAlign:'center'}}>%</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Grade</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Violations</th>
+                        <th style={{padding:'8px',textAlign:'center'}}>Auto-Sub.</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Status</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Time Taken</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Attempt</th>
@@ -4828,12 +4910,14 @@ Answer: C`
                           <td style={{padding:'8px',textAlign:'center',fontWeight:'bold',color: r.score>=50?'#28a745':'#dc3545'}}>{r.score}%</td>
                           <td style={{padding:'8px',textAlign:'center',fontWeight:'bold'}}>{r.grade}</td>
                           <td style={{
-                            padding:'8px',
-                            textAlign:'center',
-                            fontWeight: (r.violations||0) >= 3 ? '700' : 'normal',
-                            color: (r.violations||0) >= 3 ? '#dc3545' : '#333'
+                            padding:'8px', textAlign:'center',
+                            fontWeight: (r.violations||0) >= 2 ? '700' : 'normal',
+                            color: (r.violations||0) >= 2 ? '#dc3545' : '#333'
                           }}>
-                            {(r.violations||0) >= 3 ? `🚨 ${r.violations}` : (r.violations || 0)}
+                            {(r.violations||0) >= 2 ? `🚨 ${r.violations}` : (r.violations || 0)}
+                          </td>
+                          <td style={{padding:'8px',textAlign:'center',fontSize:'12px'}}>
+                            {r.auto_submitted ? '✅ Yes' : '—'}
                           </td>
                           <td style={{padding:'8px',textAlign:'center'}}>
                             <span style={{
