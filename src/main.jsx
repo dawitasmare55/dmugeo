@@ -448,7 +448,6 @@ function App(){
   }
 
   async function logout() {
-    // Exit any active fullscreen
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
     } catch (e) { /* ignore */ }
@@ -3802,7 +3801,9 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM — with FULL Anti-Cheating
+// EXAM SYSTEM
+// Staff: own exams only. Students: own results only.
+// Anti-cheating: 3 violations = auto-submit + exam permanently locked
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -3828,9 +3829,7 @@ function ExamSystem({ user, meta }) {
   const [startTime, setStartTime] = useState(null);
   const [filterYear, setFilterYear] = useState('all');
 
-  // ============================================
-  // ANTI-CHEATING STATE
-  // ============================================
+  // Anti-cheating state
   const [violations, setViolations] = useState(0);
   const [violationLog, setViolationLog] = useState([]);
   const MAX_VIOLATIONS = 3;
@@ -3842,9 +3841,6 @@ function ExamSystem({ user, meta }) {
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
 
-  // ============================================
-  // ANTI-CHEATING HELPER FUNCTIONS
-  // ============================================
   const enterFullscreen = async () => {
     try {
       const el = document.documentElement;
@@ -3884,7 +3880,6 @@ function ExamSystem({ user, meta }) {
       count: current
     }]);
 
-    // Save to progress so it persists even if user refreshes
     if (currentExam) {
       supabase.from('exam_progress').upsert({
         user_id: user.id,
@@ -3898,8 +3893,7 @@ function ExamSystem({ user, meta }) {
     }
 
     if (current >= MAX_VIOLATIONS) {
-      alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou have reached ${MAX_VIOLATIONS} violations. Your exam has been auto-submitted.`);
-      // Force submit
+      alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou have reached ${MAX_VIOLATIONS} violations. Your exam has been auto-submitted and you cannot retake it.`);
       if (currentExam && !submitted) {
         examActiveRef.current = false;
         doSubmit(true, true);
@@ -3927,9 +3921,7 @@ function ExamSystem({ user, meta }) {
     return () => clearInterval(t);
   }, [currentExam, timeLeft, submitted]);
 
-  // ============================================
-  // ANTI-CHEATING LISTENERS
-  // ============================================
+  // Anti-cheating listeners
   useEffect(() => {
     if (!currentExam || submitted || !isStudent) {
       examActiveRef.current = false;
@@ -3941,10 +3933,8 @@ function ExamSystem({ user, meta }) {
     setViolations(0);
     setViolationLog([]);
 
-    // 1. Enter fullscreen after UI mounts
     const fsTimer = setTimeout(() => { enterFullscreen(); }, 500);
 
-    // 2. Detect fullscreen exit
     const handleFullscreenChange = () => {
       const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
       fullscreenRef.current = isFs;
@@ -3956,7 +3946,6 @@ function ExamSystem({ user, meta }) {
     document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
     document.addEventListener('msfullscreenchange', handleFullscreenChange);
 
-    // 3. Detect tab switch / window blur
     const handleVisibility = () => {
       if (document.hidden && examActiveRef.current) {
         registerViolation('Switched tab or minimized the browser');
@@ -3971,7 +3960,6 @@ function ExamSystem({ user, meta }) {
     };
     window.addEventListener('blur', handleBlur);
 
-    // 4. Block copy / paste / cut / right-click
     const blockCopy = (e) => {
       e.preventDefault();
       if (examActiveRef.current) registerViolation('Attempted to copy content');
@@ -3991,7 +3979,6 @@ function ExamSystem({ user, meta }) {
     document.addEventListener('cut', blockCut);
     document.addEventListener('contextmenu', blockContextMenu);
 
-    // 5. Block common devtools shortcuts
     const blockKeys = (e) => {
       if (!examActiveRef.current) return;
       const key = e.key;
@@ -4049,9 +4036,7 @@ function ExamSystem({ user, meta }) {
   const updQ = (id, f, v) => setQuestions(questions.map(q => q.id === id ? { ...q, [f]: v } : q));
   const updC = (qid, ci, v) => setQuestions(questions.map(q => q.id === qid ? { ...q, choices: q.choices.map((c, i) => i === ci ? v : c) } : q));
 
-  // ============================================
-  // BULK IMPORT PARSER
-  // ============================================
+  // Bulk import parser
   const parseBulkQuestions = (text) => {
     const questions = [];
     const errors = [];
@@ -4209,7 +4194,29 @@ function ExamSystem({ user, meta }) {
     refresh();
   };
 
+  // ============================================
+  // START EXAM — with retake prevention
+  // ============================================
   const startExam = async (exam) => {
+    // Block retake if student already has a result for this exam
+    const alreadyTaken = results.some(
+      r => r.user_id === user.id && r.exam_id === exam.id
+    );
+
+    if (alreadyTaken) {
+      const previousResult = results.find(
+        r => r.user_id === user.id && r.exam_id === exam.id
+      );
+      const wasTerminated = (previousResult?.violations || 0) >= 3;
+
+      alert(
+        wasTerminated
+          ? '🚫 This exam was terminated due to multiple cheating violations.\n\nYou cannot retake it. Please contact your instructor.'
+          : '⚠️ You have already taken this exam.\n\nYou cannot retake it.'
+      );
+      return;
+    }
+
     const { data } = await supabase.from('exam_progress').select('*').eq('user_id', user.id).eq('exam_id', exam.id).maybeSingle();
 
     violationsRef.current = 0;
@@ -4326,15 +4333,44 @@ function ExamSystem({ user, meta }) {
     [exams, user]
   );
 
+  // ============================================
+  // STUDENT EXAM HISTORY
+  // ============================================
+  const myResults = useMemo(
+    () => results.filter(r => r.user_id === user?.id),
+    [results, user]
+  );
+
+  const takenExamIds = useMemo(() => {
+    return new Set(myResults.map(r => r.exam_id));
+  }, [myResults]);
+
+  const terminatedExamIds = useMemo(() => {
+    return new Set(
+      myResults
+        .filter(r => (r.violations || 0) >= 3)
+        .map(r => r.exam_id)
+    );
+  }, [myResults]);
+
+  const availableExams = useMemo(() => {
+    if (!isStudent) return [];
+    return exams.filter(e =>
+      e.released &&
+      e.target_year === meta?.year &&
+      !takenExamIds.has(e.id)
+    );
+  }, [exams, meta, isStudent, takenExamIds]);
+
   const filteredResults = useMemo(() => {
     if (isStudent) {
       return results.filter(r => r.user_id === user.id);
     }
     const myExamIds = exams.filter(e => e.user_id === user.id).map(e => e.id);
-    const myResults = results.filter(r => myExamIds.includes(r.exam_id));
+    const myRes = results.filter(r => myExamIds.includes(r.exam_id));
     return filterYear === 'all'
-      ? myResults
-      : myResults.filter(r => r.student_year === filterYear);
+      ? myRes
+      : myRes.filter(r => r.student_year === filterYear);
   }, [results, exams, filterYear, isStudent, user]);
 
   const downloadExcel = () => {
@@ -4387,8 +4423,6 @@ function ExamSystem({ user, meta }) {
     const q = currentExam.questions[qIndex];
     return (
       <div style={{ marginTop: '30px', background: 'white', padding: '25px', borderRadius: '12px' }}>
-
-        {/* VIOLATION BANNER */}
         {violations > 0 && (
           <div style={{
             background: violations >= MAX_VIOLATIONS - 1 ? '#dc3545' : '#fff3cd',
@@ -4716,10 +4750,16 @@ Answer: C`
           {isStudent && (
             <div>
               <h3>📚 Available Exams for Year {meta?.year}</h3>
-              {exams.filter(e => e.released && e.target_year === meta?.year).length === 0 && (
-                <p style={{color:'#66788a'}}>No exams released for your year yet.</p>
+
+              {availableExams.length === 0 && (
+                <p style={{color:'#66788a'}}>
+                  {exams.filter(e => e.released && e.target_year === meta?.year).length === 0
+                    ? 'No exams released for your year yet.'
+                    : 'You have already taken or completed all released exams. See your results below.'}
+                </p>
               )}
-              {exams.filter(e => e.released && e.target_year === meta?.year).map(e => (
+
+              {availableExams.map(e => (
                 <div key={e.id} style={{padding:'15px',border:'1px solid #dbe4ec',borderRadius:'8px',marginBottom:'10px'}}>
                   <strong>{e.title}</strong>
                   <p style={{margin:'4px 0',color:'#66788a',fontSize:'13px'}}>
@@ -4728,6 +4768,51 @@ Answer: C`
                   <button className="primary" onClick={()=>startExam(e)} style={{marginTop:'8px'}}>Start Exam</button>
                 </div>
               ))}
+
+              {terminatedExamIds.size > 0 && (
+                <div style={{ marginTop: '30px' }}>
+                  <h4 style={{ color: '#dc3545', marginBottom: '12px' }}>
+                    🚫 Terminated Exams ({terminatedExamIds.size})
+                  </h4>
+                  <p style={{ color: '#66788a', fontSize: '13px', marginTop: '-4px', marginBottom: '14px' }}>
+                    These exams were automatically submitted due to multiple cheating violations. You cannot retake them.
+                  </p>
+
+                  {exams.filter(e => terminatedExamIds.has(e.id)).map(e => (
+                    <div
+                      key={e.id}
+                      style={{
+                        padding: '15px',
+                        border: '2px solid #dc3545',
+                        background: '#fff5f5',
+                        borderRadius: '8px',
+                        marginBottom: '10px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                        <div>
+                          <strong style={{ color: '#721c24' }}>{e.title}</strong>
+                          <p style={{ margin: '4px 0', color: '#721c24', fontSize: '13px' }}>
+                            {e.course_code} — {e.course_name} • {e.exam_type}
+                          </p>
+                        </div>
+                        <span style={{
+                          background: '#dc3545', color: 'white',
+                          padding: '4px 14px', borderRadius: '20px',
+                          fontSize: '12px', fontWeight: '700',
+                          letterSpacing: '0.5px'
+                        }}>
+                          🚫 TERMINATED
+                        </span>
+                      </div>
+                      <p style={{ margin: '8px 0 0', color: '#721c24', fontSize: '13px', fontStyle: 'italic' }}>
+                        {myResults.find(r => r.exam_id === e.id && (r.violations || 0) >= 3)?.violations || 3} violation(s) detected — exam was auto-submitted.
+                        You must contact your instructor if you believe this was a mistake.
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -4816,11 +4901,20 @@ Answer: C`
                           <td style={{padding:'8px',textAlign:'center',fontWeight:'bold',color: r.score>=50?'#28a745':'#dc3545'}}>{r.score}%</td>
                           <td style={{padding:'8px',textAlign:'center',fontWeight:'bold'}}>{r.grade}</td>
                           <td style={{padding:'8px',textAlign:'center'}}>
-                            <span style={{
-                              padding:'2px 8px',borderRadius:'10px',fontSize:'11px',
-                              background: r.status==='Passed'?'#d4edda':'#f8d7da',
-                              color: r.status==='Passed'?'#155724':'#721c24'
-                            }}>{r.status}</span>
+                            {(r.violations || 0) >= 3 ? (
+                              <span style={{
+                                padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
+                                background:'#dc3545',color:'white'
+                              }}>
+                                🚫 Terminated
+                              </span>
+                            ) : (
+                              <span style={{
+                                padding:'2px 8px',borderRadius:'10px',fontSize:'11px',
+                                background: r.status==='Passed'?'#d4edda':'#f8d7da',
+                                color: r.status==='Passed'?'#155724':'#721c24'
+                              }}>{r.status}</span>
+                            )}
                           </td>
                           <td style={{padding:'8px',textAlign:'center'}}>{fmtTime(r.time_taken)}</td>
                           <td style={{padding:'8px',textAlign:'center'}}>
@@ -5682,7 +5776,7 @@ function Research({ publications, setPublications, user, meta }) {
       const { data } = await supabase.from('publications').insert([row]).select();
       if (data) setPublications(prev => [...data, ...prev]);
     }
-    setForm({title:'',authors:'',year:new Date().getFullYear(),journal:'',link:'',abstract:''}); setEditing(null);
+    setForm({title:'',authors:'',year:newDate().getFullYear(),journal:'',link:'',abstract:''}); setEditing(null);
     alert('✅ Saved!');
   };
   const del = async (id) => { if (confirm('Delete?')) { await supabase.from('publications').delete().eq('id', id); setPublications(prev => prev.filter(p=>p.id!==id)); } };
