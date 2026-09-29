@@ -232,6 +232,178 @@ function App(){
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // ============================================
+  // GLOBAL ANTI-CHEATING WATCHER
+  // Fires even when ExamSystem is unmounted (e.g., student navigated
+  // to another page). Reads the active exam from localStorage, so
+  // leaving fullscreen or switching tabs mid-exam ALWAYS counts as a
+  // violation — regardless of which page the student is viewing.
+  // ============================================
+  useEffect(() => {
+    if (!user) return;
+
+    const MAX_VIOLATIONS = 3;
+    let processing = false; // prevent concurrent violation bursts
+
+    const bump = async (reason) => {
+      if (processing) return;
+      const raw = localStorage.getItem('activeExam');
+      if (!raw) return;
+      let active;
+      try { active = JSON.parse(raw); } catch { return; }
+      if (!active || !active.examId || !active.userId) return;
+      if (active.userId !== user.id) return; // only this user
+
+      processing = true;
+      active.violations = (active.violations || 0) + 1;
+      localStorage.setItem('activeExam', JSON.stringify(active));
+
+      try {
+        await supabase.from('exam_progress').upsert({
+          user_id: active.userId,
+          exam_id: active.examId,
+          violations: active.violations
+        }, { onConflict: 'user_id,exam_id' });
+      } catch (e) { console.warn('progress upsert failed', e); }
+
+      if (active.violations >= MAX_VIOLATIONS) {
+        alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou reached ${MAX_VIOLATIONS} violations. The exam will now be submitted automatically.`);
+
+        try {
+          const { data: prog } = await supabase
+            .from('exam_progress')
+            .select('*')
+            .eq('user_id', active.userId)
+            .eq('exam_id', active.examId)
+            .maybeSingle();
+
+          const { data: examRow } = await supabase
+            .from('exams')
+            .select('*')
+            .eq('id', active.examId)
+            .maybeSingle();
+
+          if (examRow && prog) {
+            const questions = examRow.questions || [];
+            const answers = prog.answers || {};
+            let totalPts = 0, earned = 0, correct = 0, wrong = 0;
+            questions.forEach(q => {
+              const p = q.points || 1;
+              totalPts += p;
+              if (answers[q.id] === q.correctAnswer) { correct++; earned += p; }
+              else if (answers[q.id] != null) { wrong++; }
+            });
+            const unanswered = questions.length - correct - wrong;
+            const pct = totalPts > 0 ? Math.round((earned / totalPts) * 100) : 0;
+            const grade = pct >= 90 ? 'A+' : pct >= 85 ? 'A' : pct >= 80 ? 'A-' :
+                          pct >= 75 ? 'B+' : pct >= 70 ? 'B' : pct >= 65 ? 'B-' :
+                          pct >= 60 ? 'C+' : pct >= 50 ? 'C' : pct >= 45 ? 'D' : 'F';
+            const status = pct >= 50 ? 'Passed' : 'Failed';
+            const timeTaken = (examRow.duration || 30) * 60 - (prog.time_left || 0);
+
+            await supabase.from('exam_results').insert([{
+              exam_id: examRow.id, exam_title: examRow.title,
+              student: meta?.name, student_id: meta?.student_id, student_year: meta?.year,
+              course_code: examRow.course_code, course_name: examRow.course_name,
+              exam_type: examRow.exam_type,
+              total_mark: examRow.total_mark || 100,
+              score: pct, correct, total: questions.length, wrong, unanswered,
+              total_points: totalPts, earned_points: earned,
+              grade, status, time_taken: timeTaken, attempt_number: 1,
+              answers, user_id: active.userId,
+              violations: active.violations
+            }]);
+
+            await supabase.from('exam_progress').delete()
+              .eq('user_id', active.userId)
+              .eq('exam_id', active.examId);
+          }
+        } catch (e) {
+          console.error('Auto-submit failed:', e);
+        }
+
+        localStorage.removeItem('activeExam');
+        processing = false;
+
+        // Exit fullscreen if still in it, then reload so UI refreshes
+        try {
+          if (document.fullscreenElement) await document.exitFullscreen();
+        } catch (e) { /* ignore */ }
+
+        setTimeout(() => window.location.reload(), 500);
+        return;
+      } else {
+        alert(`⚠️ Violation ${active.violations}/${MAX_VIOLATIONS}\n\nReason: ${reason}\n\n${MAX_VIOLATIONS - active.violations} more will end your exam.`);
+      }
+
+      processing = false;
+    };
+
+    const onFullscreenChange = () => {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+      if (!isFs) bump('Exited fullscreen mode');
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) bump('Switched tab or minimized the browser');
+    };
+
+    const onBlur = () => {
+      // Only count if the exam is active
+      if (localStorage.getItem('activeExam')) bump('Window lost focus (clicked outside)');
+    };
+
+    const onKeyDown = (e) => {
+      if (!localStorage.getItem('activeExam')) return;
+      const key = e.key;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const shift = e.shiftKey;
+      if (key === 'F12') { e.preventDefault(); bump('Pressed F12 (devtools)'); return; }
+      if (ctrl && shift && ['I','J','C'].includes(key.toUpperCase())) { e.preventDefault(); bump('Tried to open devtools'); return; }
+      if (ctrl && key.toUpperCase() === 'U') { e.preventDefault(); bump('Tried to view page source'); return; }
+      if (ctrl && ['C','V','X'].includes(key.toUpperCase())) { e.preventDefault(); bump(`Ctrl+${key.toUpperCase()} blocked`); return; }
+      if (ctrl && key.toUpperCase() === 'P') { e.preventDefault(); bump('Print blocked'); return; }
+    };
+
+    const onCopy = (e) => {
+      if (!localStorage.getItem('activeExam')) return;
+      e.preventDefault();
+      bump('Copy blocked');
+    };
+    const onPaste = (e) => {
+      if (!localStorage.getItem('activeExam')) return;
+      e.preventDefault();
+      bump('Paste blocked');
+    };
+    const onContextMenu = (e) => {
+      if (!localStorage.getItem('activeExam')) return;
+      e.preventDefault();
+      bump('Right-click blocked');
+    };
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    document.addEventListener('msfullscreenchange', onFullscreenChange);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('paste', onPaste);
+    document.addEventListener('contextmenu', onContextMenu);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+      document.removeEventListener('msfullscreenchange', onFullscreenChange);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('copy', onCopy);
+      document.removeEventListener('paste', onPaste);
+      document.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [user, meta]);
+
   const loadMeta = async (uid) => {
     const { data } = await supabase.from('user_metadata').select('*').eq('id', uid).maybeSingle();
     setMeta(data);
@@ -451,6 +623,8 @@ function App(){
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
     } catch (e) { /* ignore */ }
+
+    localStorage.removeItem('activeExam');
 
     await supabase.auth.signOut();
     setUser(null); setMeta(null);
@@ -3801,7 +3975,8 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM — with resume support
+// EXAM SYSTEM
+// Anti-cheating enforced globally from App() via localStorage.
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -3827,7 +4002,7 @@ function ExamSystem({ user, meta }) {
   const [startTime, setStartTime] = useState(null);
   const [filterYear, setFilterYear] = useState('all');
 
-  // Anti-cheating state
+  // Anti-cheating counters (display only — enforcement is global)
   const [violations, setViolations] = useState(0);
   const [violationLog, setViolationLog] = useState([]);
   const MAX_VIOLATIONS = 3;
@@ -3838,7 +4013,6 @@ function ExamSystem({ user, meta }) {
   const fullscreenRef = useRef(false);
   const violationsRef = useRef(0);
   const examActiveRef = useRef(false);
-  const pausedRef = useRef(false);
   // Refs mirror state so save-on-unmount and violation handler always read latest
   const answersRef = useRef({});
   const qIndexRef = useRef(0);
@@ -3876,43 +4050,6 @@ function ExamSystem({ user, meta }) {
       fullscreenRef.current = false;
     } catch (e) {
       console.warn('Exit fullscreen failed:', e);
-    }
-  };
-
-  const registerViolation = (reason) => {
-    if (!examActiveRef.current) return;
-    if (pausedRef.current) return;  // ignore while paused (student navigating away)
-
-    violationsRef.current += 1;
-    const current = violationsRef.current;
-
-    setViolations(current);
-    setViolationLog(prev => [...prev, {
-      reason,
-      timestamp: new Date().toISOString(),
-      count: current
-    }]);
-
-    if (currentExam) {
-      supabase.from('exam_progress').upsert({
-        user_id: user.id,
-        student: meta?.name,
-        exam_id: currentExam.id,
-        violations: current,
-        answers: answersRef.current,
-        current_index: qIndexRef.current,
-        time_left: timeLeftRef.current
-      }, { onConflict: 'user_id,exam_id' }).then(() => {});
-    }
-
-    if (current >= MAX_VIOLATIONS) {
-      alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou have reached ${MAX_VIOLATIONS} violations. Your exam has been auto-submitted and you cannot retake it.`);
-      if (currentExam && !submitted) {
-        examActiveRef.current = false;
-        doSubmit(true, true);
-      }
-    } else {
-      alert(`⚠️ Violation ${current}/${MAX_VIOLATIONS}\n\nReason: ${reason}\n\n${MAX_VIOLATIONS - current} more violation(s) will end your exam automatically.`);
     }
   };
 
@@ -3960,16 +4097,36 @@ function ExamSystem({ user, meta }) {
   }, [currentExam, timeLeft, submitted]);
 
   // ============================================
-  // PAUSE / RESUME ANTI-CHEATING on unmount
+  // PERSIST TIMER + PROGRESS TO localStorage EVERY SECOND
+  // Allows the App()-level watcher to know the true remaining time
+  // ============================================
+  useEffect(() => {
+    if (!currentExam || submitted) return;
+
+    try {
+      const existing = JSON.parse(localStorage.getItem('activeExam') || '{}');
+      localStorage.setItem('activeExam', JSON.stringify({
+        ...existing,
+        examId: currentExam.id,
+        userId: user.id,
+        timeLeft,
+        answers,
+        currentIndex: qIndex,
+        violations: violationsRef.current,
+        lastTick: Date.now()
+      }));
+    } catch {}
+  }, [currentExam, submitted, timeLeft, answers, qIndex]);
+
+  // ============================================
+  // SAVE PROGRESS ON UNMOUNT (no pause, no exit fullscreen)
+  // The global App() watcher keeps enforcing anti-cheating
   // ============================================
   useEffect(() => {
     if (!currentExam || submitted) return;
 
     return () => {
-      pausedRef.current = true;
-      examActiveRef.current = false;
-
-      // Save progress before leaving
+      // Save current progress; do NOT exit fullscreen and do NOT pause
       if (user && currentExam) {
         supabase.from('exam_progress').upsert({
           user_id: user.id,
@@ -3981,126 +4138,23 @@ function ExamSystem({ user, meta }) {
           violations: violationsRef.current
         }, { onConflict: 'user_id,exam_id' }).then(() => {});
       }
-
-      // Exit fullscreen so student isn't trapped
-      try {
-        if (document.fullscreenElement) document.exitFullscreen();
-      } catch (e) { /* ignore */ }
     };
   }, [currentExam, submitted]);
 
-  // Anti-cheating listeners
+  // Sync violations count from localStorage into local state (for the red banner)
   useEffect(() => {
-    if (!currentExam || submitted || !isStudent) {
-      examActiveRef.current = false;
-      return;
-    }
-
-    examActiveRef.current = true;
-    pausedRef.current = false;
-
-    // Only reset violations on FRESH start (no in-progress record)
-    const isResuming = !!inProgressExams[currentExam.id];
-    if (!isResuming) {
-      violationsRef.current = 0;
-      setViolations(0);
-      setViolationLog([]);
-    }
-
-    const fsTimer = setTimeout(() => { enterFullscreen(); }, 500);
-
-    const handleFullscreenChange = () => {
-      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
-      fullscreenRef.current = isFs;
-      if (!isFs && examActiveRef.current) {
-        registerViolation('Exited fullscreen mode');
-      }
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    document.addEventListener('msfullscreenchange', handleFullscreenChange);
-
-    const handleVisibility = () => {
-      if (document.hidden && examActiveRef.current) {
-        registerViolation('Switched tab or minimized the browser');
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-
-    const handleBlur = () => {
-      if (examActiveRef.current) {
-        registerViolation('Window lost focus');
-      }
-    };
-    window.addEventListener('blur', handleBlur);
-
-    const blockCopy = (e) => {
-      e.preventDefault();
-      if (examActiveRef.current) registerViolation('Attempted to copy content');
-    };
-    const blockPaste = (e) => {
-      e.preventDefault();
-      if (examActiveRef.current) registerViolation('Attempted to paste content');
-    };
-    const blockCut = (e) => e.preventDefault();
-    const blockContextMenu = (e) => {
-      e.preventDefault();
-      if (examActiveRef.current) registerViolation('Right-click detected');
-    };
-
-    document.addEventListener('copy', blockCopy);
-    document.addEventListener('paste', blockPaste);
-    document.addEventListener('cut', blockCut);
-    document.addEventListener('contextmenu', blockContextMenu);
-
-    const blockKeys = (e) => {
-      if (!examActiveRef.current) return;
-      const key = e.key;
-      const ctrl = e.ctrlKey || e.metaKey;
-      const shift = e.shiftKey;
-
-      if (key === 'F12') {
-        e.preventDefault();
-        registerViolation('Pressed F12 (developer tools)');
-        return;
-      }
-      if (ctrl && shift && ['I','J','C'].includes(key.toUpperCase())) {
-        e.preventDefault();
-        registerViolation('Tried to open developer tools');
-        return;
-      }
-      if (ctrl && key.toUpperCase() === 'U') {
-        e.preventDefault();
-        registerViolation('Tried to view page source');
-        return;
-      }
-      if (ctrl && ['C','V','X'].includes(key.toUpperCase())) {
-        e.preventDefault();
-        registerViolation(`Tried keyboard shortcut Ctrl+${key.toUpperCase()}`);
-        return;
-      }
-      if (ctrl && key.toUpperCase() === 'P') {
-        e.preventDefault();
-        registerViolation('Tried to print the exam');
-        return;
-      }
-    };
-    document.addEventListener('keydown', blockKeys);
-
-    return () => {
-      clearTimeout(fsTimer);
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('msfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('blur', handleBlur);
-      document.removeEventListener('copy', blockCopy);
-      document.removeEventListener('paste', blockPaste);
-      document.removeEventListener('cut', blockCut);
-      document.removeEventListener('contextmenu', blockContextMenu);
-      document.removeEventListener('keydown', blockKeys);
-    };
-  }, [currentExam, submitted, isStudent]);
+    if (!currentExam || submitted) return;
+    const t = setInterval(() => {
+      try {
+        const stored = JSON.parse(localStorage.getItem('activeExam') || '{}');
+        if (stored.examId === currentExam.id && stored.violations !== undefined) {
+          violationsRef.current = stored.violations;
+          setViolations(stored.violations);
+        }
+      } catch {}
+    }, 1000);
+    return () => clearInterval(t);
+  }, [currentExam, submitted]);
 
   const addQ = () => {
     const nid = Math.max(...questions.map(q => q.id)) + 1;
@@ -4319,9 +4373,32 @@ function ExamSystem({ user, meta }) {
       setAnswers(data.answers || {});
       setQIndex(data.current_index || 0);
 
-      const remaining = data.time_left ?? exam.duration * 60;
+      // Compute real remaining time accounting for time spent away
+      let remaining = data.time_left ?? exam.duration * 60;
+
+      try {
+        const stored = JSON.parse(localStorage.getItem('activeExam') || '{}');
+        if (stored.examId === exam.id && stored.lastTick) {
+          const elapsed = Math.floor((Date.now() - stored.lastTick) / 1000);
+          remaining = Math.max(0, remaining - elapsed);
+        }
+      } catch {}
+
       if (remaining <= 0) {
         alert('⏰ Time is up for this exam. It will be submitted now.');
+
+        // Lock in the timer, re-enter fullscreen briefly, then submit
+        localStorage.setItem('activeExam', JSON.stringify({
+          examId: exam.id,
+          userId: user.id,
+          startedAt: Date.now(),
+          violations: violationsRef.current,
+          timeLeft: 0,
+          answers: data.answers || {},
+          currentIndex: data.current_index || 0,
+          lastTick: Date.now()
+        }));
+
         setTimeLeft(0);
         setTimeout(() => doSubmit(true, true), 200);
         return;
@@ -4329,7 +4406,25 @@ function ExamSystem({ user, meta }) {
 
       setTimeLeft(remaining);
 
+      // Lock exam globally and re-enter fullscreen immediately
+      localStorage.setItem('activeExam', JSON.stringify({
+        examId: exam.id,
+        userId: user.id,
+        startedAt: Date.now(),
+        violations: violationsRef.current,
+        timeLeft: remaining,
+        answers: data.answers || {},
+        currentIndex: data.current_index || 0,
+        lastTick: Date.now()
+      }));
+
       setInProgressExams(prev => ({ ...prev, [exam.id]: data }));
+
+      try {
+        const el = document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+      } catch (e) { console.warn('FS failed:', e); }
 
       alert(
         '▶️ Continuing your exam.\n\n' +
@@ -4355,15 +4450,34 @@ function ExamSystem({ user, meta }) {
 
       setInProgressExams(prev => ({ ...prev, [exam.id]: newRow }));
 
+      // Lock exam globally and enter fullscreen immediately
+      localStorage.setItem('activeExam', JSON.stringify({
+        examId: exam.id,
+        userId: user.id,
+        startedAt: Date.now(),
+        violations: 0,
+        timeLeft: exam.duration * 60,
+        answers: {},
+        currentIndex: 0,
+        lastTick: Date.now()
+      }));
+
       alert(
         '📋 Exam Rules:\n\n' +
         '• Fullscreen mode will be enforced\n' +
         '• Tab switching will be logged\n' +
         '• Copy/paste is disabled\n' +
         `• ${MAX_VIOLATIONS} violations = auto-submit\n` +
-        '• Your progress is saved every 5 seconds — you can safely pause and resume\n\n' +
+        '• Your progress is saved every 5 seconds — you can safely pause and resume\n' +
+        '⚠️ Leaving the exam page (even to browse other parts of this site) still counts time against you and logs violations.\n\n' +
         'Click OK to start.'
       );
+
+      try {
+        const el = document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+      } catch (e) { console.warn('FS failed:', e); }
 
       await supabase.from('exam_progress').insert([newRow]);
     }
@@ -4435,6 +4549,9 @@ function ExamSystem({ user, meta }) {
       violations: violationsRef.current
     }]);
     await supabase.from('exam_progress').delete().eq('user_id', user.id).eq('exam_id', currentExam.id);
+
+    // Release the exam lock
+    localStorage.removeItem('activeExam');
 
     await exitFullscreen();
 
