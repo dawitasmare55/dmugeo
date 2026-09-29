@@ -448,6 +448,11 @@ function App(){
   }
 
   async function logout() {
+    // Exit any active fullscreen
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+    } catch (e) { /* ignore */ }
+
     await supabase.auth.signOut();
     setUser(null); setMeta(null);
     setLoginOpen(false); setProfilePic(null);
@@ -3797,7 +3802,7 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 }
 
 // ============================================
-// EXAM SYSTEM — Staff see ONLY their own exams & results
+// EXAM SYSTEM — with FULL Anti-Cheating
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -3823,8 +3828,86 @@ function ExamSystem({ user, meta }) {
   const [startTime, setStartTime] = useState(null);
   const [filterYear, setFilterYear] = useState('all');
 
+  // ============================================
+  // ANTI-CHEATING STATE
+  // ============================================
+  const [violations, setViolations] = useState(0);
+  const [violationLog, setViolationLog] = useState([]);
+  const MAX_VIOLATIONS = 3;
+
+  const fullscreenRef = useRef(false);
+  const violationsRef = useRef(0);
+  const examActiveRef = useRef(false);
+
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
+
+  // ============================================
+  // ANTI-CHEATING HELPER FUNCTIONS
+  // ============================================
+  const enterFullscreen = async () => {
+    try {
+      const el = document.documentElement;
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        await el.webkitRequestFullscreen();
+      } else if (el.msRequestFullscreen) {
+        await el.msRequestFullscreen();
+      }
+      fullscreenRef.current = true;
+    } catch (e) {
+      console.warn('Fullscreen request failed:', e);
+    }
+  };
+
+  const exitFullscreen = async () => {
+    try {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+      else if (document.msExitFullscreen) await document.msExitFullscreen();
+      fullscreenRef.current = false;
+    } catch (e) {
+      console.warn('Exit fullscreen failed:', e);
+    }
+  };
+
+  const registerViolation = (reason) => {
+    if (!examActiveRef.current) return;
+    violationsRef.current += 1;
+    const current = violationsRef.current;
+
+    setViolations(current);
+    setViolationLog(prev => [...prev, {
+      reason,
+      timestamp: new Date().toISOString(),
+      count: current
+    }]);
+
+    // Save to progress so it persists even if user refreshes
+    if (currentExam) {
+      supabase.from('exam_progress').upsert({
+        user_id: user.id,
+        student: meta?.name,
+        exam_id: currentExam.id,
+        violations: current,
+        answers,
+        current_index: qIndex,
+        time_left: timeLeft
+      }, { onConflict: 'user_id,exam_id' }).then(() => {});
+    }
+
+    if (current >= MAX_VIOLATIONS) {
+      alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou have reached ${MAX_VIOLATIONS} violations. Your exam has been auto-submitted.`);
+      // Force submit
+      if (currentExam && !submitted) {
+        examActiveRef.current = false;
+        doSubmit(true, true);
+      }
+    } else {
+      alert(`⚠️ Violation ${current}/${MAX_VIOLATIONS}\n\nReason: ${reason}\n\n${MAX_VIOLATIONS - current} more violation(s) will end your exam automatically.`);
+    }
+  };
 
   const refresh = async () => {
     const { data: e } = await supabase.from('exams').select('*').order('created_at', { ascending: false });
@@ -3843,6 +3926,120 @@ function ExamSystem({ user, meta }) {
     }, 1000);
     return () => clearInterval(t);
   }, [currentExam, timeLeft, submitted]);
+
+  // ============================================
+  // ANTI-CHEATING LISTENERS
+  // ============================================
+  useEffect(() => {
+    if (!currentExam || submitted || !isStudent) {
+      examActiveRef.current = false;
+      return;
+    }
+
+    examActiveRef.current = true;
+    violationsRef.current = 0;
+    setViolations(0);
+    setViolationLog([]);
+
+    // 1. Enter fullscreen after UI mounts
+    const fsTimer = setTimeout(() => { enterFullscreen(); }, 500);
+
+    // 2. Detect fullscreen exit
+    const handleFullscreenChange = () => {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+      fullscreenRef.current = isFs;
+      if (!isFs && examActiveRef.current) {
+        registerViolation('Exited fullscreen mode');
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('msfullscreenchange', handleFullscreenChange);
+
+    // 3. Detect tab switch / window blur
+    const handleVisibility = () => {
+      if (document.hidden && examActiveRef.current) {
+        registerViolation('Switched tab or minimized the browser');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    const handleBlur = () => {
+      if (examActiveRef.current) {
+        registerViolation('Window lost focus');
+      }
+    };
+    window.addEventListener('blur', handleBlur);
+
+    // 4. Block copy / paste / cut / right-click
+    const blockCopy = (e) => {
+      e.preventDefault();
+      if (examActiveRef.current) registerViolation('Attempted to copy content');
+    };
+    const blockPaste = (e) => {
+      e.preventDefault();
+      if (examActiveRef.current) registerViolation('Attempted to paste content');
+    };
+    const blockCut = (e) => e.preventDefault();
+    const blockContextMenu = (e) => {
+      e.preventDefault();
+      if (examActiveRef.current) registerViolation('Right-click detected');
+    };
+
+    document.addEventListener('copy', blockCopy);
+    document.addEventListener('paste', blockPaste);
+    document.addEventListener('cut', blockCut);
+    document.addEventListener('contextmenu', blockContextMenu);
+
+    // 5. Block common devtools shortcuts
+    const blockKeys = (e) => {
+      if (!examActiveRef.current) return;
+      const key = e.key;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const shift = e.shiftKey;
+
+      if (key === 'F12') {
+        e.preventDefault();
+        registerViolation('Pressed F12 (developer tools)');
+        return;
+      }
+      if (ctrl && shift && ['I','J','C'].includes(key.toUpperCase())) {
+        e.preventDefault();
+        registerViolation('Tried to open developer tools');
+        return;
+      }
+      if (ctrl && key.toUpperCase() === 'U') {
+        e.preventDefault();
+        registerViolation('Tried to view page source');
+        return;
+      }
+      if (ctrl && ['C','V','X'].includes(key.toUpperCase())) {
+        e.preventDefault();
+        registerViolation(`Tried keyboard shortcut Ctrl+${key.toUpperCase()}`);
+        return;
+      }
+      if (ctrl && key.toUpperCase() === 'P') {
+        e.preventDefault();
+        registerViolation('Tried to print the exam');
+        return;
+      }
+    };
+    document.addEventListener('keydown', blockKeys);
+
+    return () => {
+      clearTimeout(fsTimer);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('msfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      document.removeEventListener('copy', blockCopy);
+      document.removeEventListener('paste', blockPaste);
+      document.removeEventListener('cut', blockCut);
+      document.removeEventListener('contextmenu', blockContextMenu);
+      document.removeEventListener('keydown', blockKeys);
+    };
+  }, [currentExam, submitted, isStudent]);
 
   const addQ = () => {
     const nid = Math.max(...questions.map(q => q.id)) + 1;
@@ -4014,9 +4211,17 @@ function ExamSystem({ user, meta }) {
 
   const startExam = async (exam) => {
     const { data } = await supabase.from('exam_progress').select('*').eq('user_id', user.id).eq('exam_id', exam.id).maybeSingle();
+
+    violationsRef.current = 0;
+    setViolations(0);
+    setViolationLog([]);
+
     setCurrentExam(exam);
     setSubmitted(false); setQIndex(0); setAnswers({});
     setStartTime(Date.now());
+
+    alert('📋 Exam Rules:\n\n• Fullscreen mode will be enforced\n• Tab switching will be logged\n• Copy/paste is disabled\n• ' + MAX_VIOLATIONS + ' violations = auto-submit\n\nClick OK to start.');
+
     if (data) {
       setAnswers(data.answers || {});
       setQIndex(data.current_index || 0);
@@ -4026,7 +4231,8 @@ function ExamSystem({ user, meta }) {
       await supabase.from('exam_progress').insert([{
         user_id: user.id, student: meta?.name,
         exam_id: exam.id, answers: {}, current_index: 0,
-        time_left: exam.duration * 60
+        time_left: exam.duration * 60,
+        violations: 0
       }]);
     }
   };
@@ -4037,7 +4243,8 @@ function ExamSystem({ user, meta }) {
       await supabase.from('exam_progress').upsert({
         user_id: user.id, student: meta?.name,
         exam_id: currentExam.id,
-        answers, current_index: qIndex, time_left: timeLeft
+        answers, current_index: qIndex, time_left: timeLeft,
+        violations: violationsRef.current
       }, { onConflict: 'user_id,exam_id' });
     }, 5000);
     return () => clearInterval(t);
@@ -4056,11 +4263,14 @@ function ExamSystem({ user, meta }) {
     return 'F';
   };
 
-  const doSubmit = async (auto = false) => {
+  const doSubmit = async (auto = false, force = false) => {
     if (submitted) return;
+    examActiveRef.current = false;
+
     const total = currentExam.questions.length;
     const answered = Object.keys(answers).length;
-    if (!auto && answered < total && !confirm(`Answered ${answered}/${total}. Submit anyway?`)) return;
+    if (!auto && !force && answered < total && !confirm(`Answered ${answered}/${total}. Submit anyway?`)) return;
+
     let totalPts = 0, earned = 0, correct = 0, wrong = 0;
     currentExam.questions.forEach(q => {
       const p = q.points || 1;
@@ -4089,9 +4299,13 @@ function ExamSystem({ user, meta }) {
       score: pct, correct, total, wrong, unanswered,
       total_points: totalPts, earned_points: earned,
       grade, status, time_taken: timeTaken, attempt_number: attempt,
-      answers, user_id: user.id
+      answers, user_id: user.id,
+      violations: violationsRef.current
     }]);
     await supabase.from('exam_progress').delete().eq('user_id', user.id).eq('exam_id', currentExam.id);
+
+    await exitFullscreen();
+
     setSubmitted(true);
     setTimeout(() => { setCurrentExam(null); setSubmitted(false); refresh(); }, 2000);
   };
@@ -4107,19 +4321,11 @@ function ExamSystem({ user, meta }) {
     return `${m}m ${s}s`;
   };
 
-  // ============================================
-  // STAFF-ONLY EXAMS: only the ones they created
-  // ============================================
   const myExams = useMemo(
     () => exams.filter(e => e.user_id === user?.id),
     [exams, user]
   );
 
-  // ============================================
-  // Filtered results:
-  // - Students → only their own
-  // - Staff   → only results from exams THEY created
-  // ============================================
   const filteredResults = useMemo(() => {
     if (isStudent) {
       return results.filter(r => r.user_id === user.id);
@@ -4132,7 +4338,6 @@ function ExamSystem({ user, meta }) {
   }, [results, exams, filterYear, isStudent, user]);
 
   const downloadExcel = () => {
-    // Staff: only export their own exams' results
     const myExamIds = exams.filter(e => e.user_id === user.id).map(e => e.id);
     const scoped = results.filter(r => myExamIds.includes(r.exam_id));
 
@@ -4158,6 +4363,7 @@ function ExamSystem({ user, meta }) {
       'Grade': r.grade || '',
       'Status': r.status || '',
       'Time Taken': fmtTime(r.time_taken),
+      'Violations': r.violations || 0,
       'Attempt Number': r.attempt_number || 1,
       'Submitted At': r.submitted_at ? new Date(r.submitted_at).toLocaleString() : ''
     }));
@@ -4167,7 +4373,7 @@ function ExamSystem({ user, meta }) {
       { wch: 4 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 28 },
       { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
       { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 12 },
-      { wch: 10 }, { wch: 20 }
+      { wch: 10 }, { wch: 10 }, { wch: 20 }
     ];
     const workbook = XLSX.utils.book_new();
     const sheetName = filterYear === 'all' ? 'My Results' : `My Year ${filterYear}`;
@@ -4181,6 +4387,29 @@ function ExamSystem({ user, meta }) {
     const q = currentExam.questions[qIndex];
     return (
       <div style={{ marginTop: '30px', background: 'white', padding: '25px', borderRadius: '12px' }}>
+
+        {/* VIOLATION BANNER */}
+        {violations > 0 && (
+          <div style={{
+            background: violations >= MAX_VIOLATIONS - 1 ? '#dc3545' : '#fff3cd',
+            color: violations >= MAX_VIOLATIONS - 1 ? 'white' : '#856404',
+            padding: '12px 18px',
+            borderRadius: '8px',
+            marginBottom: '18px',
+            fontWeight: '700',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '10px'
+          }}>
+            <span>🚨 Violations: {violations} / {MAX_VIOLATIONS}</span>
+            <span style={{ fontSize: '12px', fontWeight: '500' }}>
+              {MAX_VIOLATIONS - violations} more will end your exam
+            </span>
+          </div>
+        )}
+
         <h3>{currentExam.title}</h3>
         <p style={{ color: '#66788a' }}>
           {currentExam.course_code} — {currentExam.course_name} • {currentExam.exam_type} • Total Mark: {currentExam.total_mark || '—'}
@@ -4540,7 +4769,7 @@ Answer: C`
                 </p>
               ) : (
                 <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2100px' : '1500px'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px',minWidth: isStaff ? '2200px' : '1500px'}}>
                     <thead>
                       <tr style={{background:'#102a43',color:'white'}}>
                         <th style={{padding:'8px',textAlign:'left'}}>#</th>
@@ -4561,6 +4790,7 @@ Answer: C`
                         <th style={{padding:'8px',textAlign:'center'}}>Grade</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Status</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Time Taken</th>
+                        <th style={{padding:'8px',textAlign:'center'}}>Violations</th>
                         <th style={{padding:'8px',textAlign:'center'}}>Attempt</th>
                         <th style={{padding:'8px',textAlign:'left'}}>Submitted At</th>
                         {isStaff && <th style={{padding:'8px',textAlign:'center'}}>Action</th>}
@@ -4593,6 +4823,15 @@ Answer: C`
                             }}>{r.status}</span>
                           </td>
                           <td style={{padding:'8px',textAlign:'center'}}>{fmtTime(r.time_taken)}</td>
+                          <td style={{padding:'8px',textAlign:'center'}}>
+                            <span style={{
+                              padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'600',
+                              background: (r.violations||0) >= 3 ? '#f8d7da' : (r.violations||0) > 0 ? '#fff3cd' : '#eaf4fb',
+                              color: (r.violations||0) >= 3 ? '#721c24' : (r.violations||0) > 0 ? '#856404' : '#1769aa'
+                            }}>
+                              {r.violations || 0}
+                            </span>
+                          </td>
                           <td style={{padding:'8px',textAlign:'center'}}>{r.attempt_number || 1}</td>
                           <td style={{padding:'8px',fontSize:'11px',color:'#66788a'}}>
                             {r.submitted_at ? new Date(r.submitted_at).toLocaleString() : '—'}
