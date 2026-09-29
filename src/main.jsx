@@ -5125,7 +5125,8 @@ function ExamSystem({ user, meta }) {
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(7, 1fr)',
-              gap: '6px'
+              gap: '6px',
+              padding: '6px 6px 0 0'
             }}>
               {currentExam.questions.map((question, i) => {
                 const isCurrent = i === qIndex;
@@ -5147,17 +5148,22 @@ function ExamSystem({ user, meta }) {
                   cursor: 'pointer',
                   transition: 'background 0.1s, border-color 0.1s',
                   padding: 0,
-                  lineHeight: 1
+                  lineHeight: 1,
+                  position: 'relative'
                 };
 
+                // Answered questions → full dark black
                 if (isAnswered) {
                   btnStyle = {
                     ...btnStyle,
-                    backgroundColor: '#cbd5e1',
-                    borderColor: '#94a3b8'
+                    backgroundColor: '#0b1a2b',
+                    borderColor: '#0b1a2b',
+                    color: '#ffffff',
+                    fontWeight: '700'
                   };
                 }
 
+                // Current question → blue (overrides answered color)
                 if (isCurrent) {
                   btnStyle = {
                     ...btnStyle,
@@ -5168,28 +5174,39 @@ function ExamSystem({ user, meta }) {
                   };
                 }
 
-                if (isFlagged) {
-                  btnStyle = {
-                    ...btnStyle,
-                    border: '2px solid #e6b800',
-                    backgroundColor: isCurrent ? '#1a5a9c' : '#fff8e1'
-                  };
-                }
-
                 return (
                   <button
                     key={question.id}
                     onClick={() => setQIndex(i)}
                     style={btnStyle}
                     onMouseEnter={e => {
-                      if (!isCurrent) e.currentTarget.style.backgroundColor = '#e2e8f0';
+                      if (!isCurrent) {
+                        e.currentTarget.style.backgroundColor = isAnswered ? '#1e2b3c' : '#e2e8f0';
+                        if (!isAnswered) e.currentTarget.style.color = '#1e2b3c';
+                      }
                     }}
                     onMouseLeave={e => {
                       if (!isCurrent) {
-                        e.currentTarget.style.backgroundColor = isAnswered ? '#cbd5e1' : '#f1f5f9';
+                        e.currentTarget.style.backgroundColor = isAnswered ? '#0b1a2b' : '#f1f5f9';
+                        e.currentTarget.style.color = isAnswered ? '#ffffff' : '#1e2b3c';
                       }
                     }}
                   >
+                    {isFlagged && (
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: '-6px',
+                          right: '-6px',
+                          fontSize: '12px',
+                          lineHeight: 1,
+                          filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.25))',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        🚩
+                      </span>
+                    )}
                     {i + 1}
                   </button>
                 );
