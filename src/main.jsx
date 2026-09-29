@@ -238,23 +238,36 @@ function App(){
   // to another page). Reads the active exam from localStorage, so
   // leaving fullscreen or switching tabs mid-exam ALWAYS counts as a
   // violation — regardless of which page the student is viewing.
+  //
+  // The suppression window prevents a single action (like exiting
+  // fullscreen) from cascading into 3 violations because the alert
+  // dialog itself triggers blur/focus events.
   // ============================================
   useEffect(() => {
     if (!user) return;
 
     const MAX_VIOLATIONS = 3;
-    let processing = false; // prevent concurrent violation bursts
+    let processing = false;
+    let suppressUntil = 0;
+    const SUPPRESS_MS = 1500;
 
     const bump = async (reason) => {
+      // Suppress violations during alert cool-down
+      if (Date.now() < suppressUntil) return;
+      if (Date.now() < (window.__violationSuppressUntil || 0)) return;
       if (processing) return;
+
       const raw = localStorage.getItem('activeExam');
       if (!raw) return;
       let active;
       try { active = JSON.parse(raw); } catch { return; }
       if (!active || !active.examId || !active.userId) return;
-      if (active.userId !== user.id) return; // only this user
+      if (active.userId !== user.id) return;
 
       processing = true;
+      suppressUntil = Date.now() + SUPPRESS_MS;
+      window.__violationSuppressUntil = Date.now() + SUPPRESS_MS;
+
       active.violations = (active.violations || 0) + 1;
       localStorage.setItem('activeExam', JSON.stringify(active));
 
@@ -267,7 +280,11 @@ function App(){
       } catch (e) { console.warn('progress upsert failed', e); }
 
       if (active.violations >= MAX_VIOLATIONS) {
+        suppressUntil = Date.now() + 5000;
+        window.__violationSuppressUntil = Date.now() + 5000;
         alert(`🚫 Exam terminated!\n\nReason: ${reason}\n\nYou reached ${MAX_VIOLATIONS} violations. The exam will now be submitted automatically.`);
+        suppressUntil = Date.now() + 3000;
+        window.__violationSuppressUntil = Date.now() + 3000;
 
         try {
           const { data: prog } = await supabase
@@ -325,7 +342,6 @@ function App(){
         localStorage.removeItem('activeExam');
         processing = false;
 
-        // Exit fullscreen if still in it, then reload so UI refreshes
         try {
           if (document.fullscreenElement) await document.exitFullscreen();
         } catch (e) { /* ignore */ }
@@ -334,6 +350,9 @@ function App(){
         return;
       } else {
         alert(`⚠️ Violation ${active.violations}/${MAX_VIOLATIONS}\n\nReason: ${reason}\n\n${MAX_VIOLATIONS - active.violations} more will end your exam.`);
+        // Extend suppression after the alert closes
+        suppressUntil = Date.now() + SUPPRESS_MS;
+        window.__violationSuppressUntil = Date.now() + SUPPRESS_MS;
       }
 
       processing = false;
@@ -349,7 +368,6 @@ function App(){
     };
 
     const onBlur = () => {
-      // Only count if the exam is active
       if (localStorage.getItem('activeExam')) bump('Window lost focus (clicked outside)');
     };
 
@@ -3977,6 +3995,7 @@ function ChangePasswordModal({ onClose, onSuccess }) {
 // ============================================
 // EXAM SYSTEM
 // Anti-cheating enforced globally from App() via localStorage.
+// Violation suppression prevents alert-cascade.
 // ============================================
 function ExamSystem({ user, meta }) {
   const [exams, setExams] = useState([]);
@@ -4002,18 +4021,15 @@ function ExamSystem({ user, meta }) {
   const [startTime, setStartTime] = useState(null);
   const [filterYear, setFilterYear] = useState('all');
 
-  // Anti-cheating counters (display only — enforcement is global)
   const [violations, setViolations] = useState(0);
   const [violationLog, setViolationLog] = useState([]);
   const MAX_VIOLATIONS = 3;
 
-  // Resume support
   const [inProgressExams, setInProgressExams] = useState({});
 
   const fullscreenRef = useRef(false);
   const violationsRef = useRef(0);
   const examActiveRef = useRef(false);
-  // Refs mirror state so save-on-unmount and violation handler always read latest
   const answersRef = useRef({});
   const qIndexRef = useRef(0);
   const timeLeftRef = useRef(null);
@@ -4021,7 +4037,6 @@ function ExamSystem({ user, meta }) {
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
 
-  // Keep refs in sync with state
   useEffect(() => { answersRef.current = answers; }, [answers]);
   useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
   useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
@@ -4060,9 +4075,6 @@ function ExamSystem({ user, meta }) {
   };
   useEffect(() => { refresh(); }, []);
 
-  // ============================================
-  // LOAD IN-PROGRESS EXAMS (student only)
-  // ============================================
   useEffect(() => {
     if (!isStudent || !user) return;
 
@@ -4096,10 +4108,6 @@ function ExamSystem({ user, meta }) {
     return () => clearInterval(t);
   }, [currentExam, timeLeft, submitted]);
 
-  // ============================================
-  // PERSIST TIMER + PROGRESS TO localStorage EVERY SECOND
-  // Allows the App()-level watcher to know the true remaining time
-  // ============================================
   useEffect(() => {
     if (!currentExam || submitted) return;
 
@@ -4118,15 +4126,10 @@ function ExamSystem({ user, meta }) {
     } catch {}
   }, [currentExam, submitted, timeLeft, answers, qIndex]);
 
-  // ============================================
-  // SAVE PROGRESS ON UNMOUNT (no pause, no exit fullscreen)
-  // The global App() watcher keeps enforcing anti-cheating
-  // ============================================
   useEffect(() => {
     if (!currentExam || submitted) return;
 
     return () => {
-      // Save current progress; do NOT exit fullscreen and do NOT pause
       if (user && currentExam) {
         supabase.from('exam_progress').upsert({
           user_id: user.id,
@@ -4141,7 +4144,7 @@ function ExamSystem({ user, meta }) {
     };
   }, [currentExam, submitted]);
 
-  // Sync violations count from localStorage into local state (for the red banner)
+  // Sync violations count from localStorage into local state (for the banner)
   useEffect(() => {
     if (!currentExam || submitted) return;
     const t = setInterval(() => {
@@ -4164,7 +4167,6 @@ function ExamSystem({ user, meta }) {
   const updQ = (id, f, v) => setQuestions(questions.map(q => q.id === id ? { ...q, [f]: v } : q));
   const updC = (qid, ci, v) => setQuestions(questions.map(q => q.id === qid ? { ...q, choices: q.choices.map((c, i) => i === ci ? v : c) } : q));
 
-  // Bulk import parser
   const parseBulkQuestions = (text) => {
     const questions = [];
     const errors = [];
@@ -4322,11 +4324,7 @@ function ExamSystem({ user, meta }) {
     refresh();
   };
 
-  // ============================================
-  // START / RESUME EXAM
-  // ============================================
   const startExam = async (exam, resume = false) => {
-    // Block retake if student already has a result for this exam
     const alreadyTaken = results.some(
       r => r.user_id === user.id && r.exam_id === exam.id
     );
@@ -4345,7 +4343,6 @@ function ExamSystem({ user, meta }) {
       return;
     }
 
-    // Fetch saved progress (if any)
     const { data } = await supabase
       .from('exam_progress')
       .select('*')
@@ -4365,6 +4362,9 @@ function ExamSystem({ user, meta }) {
       setViolations(priorViolations);
     }
 
+    // Reset suppression window so a fresh start isn't silenced
+    window.__violationSuppressUntil = 0;
+
     setCurrentExam(exam);
     setSubmitted(false);
     setStartTime(Date.now());
@@ -4373,7 +4373,6 @@ function ExamSystem({ user, meta }) {
       setAnswers(data.answers || {});
       setQIndex(data.current_index || 0);
 
-      // Compute real remaining time accounting for time spent away
       let remaining = data.time_left ?? exam.duration * 60;
 
       try {
@@ -4387,7 +4386,6 @@ function ExamSystem({ user, meta }) {
       if (remaining <= 0) {
         alert('⏰ Time is up for this exam. It will be submitted now.');
 
-        // Lock in the timer, re-enter fullscreen briefly, then submit
         localStorage.setItem('activeExam', JSON.stringify({
           examId: exam.id,
           userId: user.id,
@@ -4406,7 +4404,6 @@ function ExamSystem({ user, meta }) {
 
       setTimeLeft(remaining);
 
-      // Lock exam globally and re-enter fullscreen immediately
       localStorage.setItem('activeExam', JSON.stringify({
         examId: exam.id,
         userId: user.id,
@@ -4450,7 +4447,6 @@ function ExamSystem({ user, meta }) {
 
       setInProgressExams(prev => ({ ...prev, [exam.id]: newRow }));
 
-      // Lock exam globally and enter fullscreen immediately
       localStorage.setItem('activeExam', JSON.stringify({
         examId: exam.id,
         userId: user.id,
@@ -4550,7 +4546,6 @@ function ExamSystem({ user, meta }) {
     }]);
     await supabase.from('exam_progress').delete().eq('user_id', user.id).eq('exam_id', currentExam.id);
 
-    // Release the exam lock
     localStorage.removeItem('activeExam');
 
     await exitFullscreen();
