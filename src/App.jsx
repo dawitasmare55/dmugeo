@@ -199,16 +199,8 @@ function App(){
   const [advisors, setAdvisors] = useState([]);
   const [leadership, setLeadership] = useState([]);
 
-  // ══════════════════════════════════════════════════
-  // FIX (Problem 2): Local latch so the ForcePasswordChange
-  // card cannot unmount while the user is typing.
-  // ══════════════════════════════════════════════════
   const [forceChangeLatched, setForceChangeLatched] = useState(false);
 
-  // ══════════════════════════════════════════════════
-  // FIX (Problem 1 & 2): Non-destructive loadMeta.
-  // A failed / empty query NEVER wipes meta.
-  // ══════════════════════════════════════════════════
   const loadMeta = async (uid) => {
     const { data, error } = await supabase
       .from('user_metadata')
@@ -225,19 +217,13 @@ function App(){
       setMeta(data);
     } else {
       console.warn('loadMeta returned no row for uid:', uid);
-      // Do nothing — keep whatever meta we already have.
     }
   };
 
-  // ══════════════════════════════════════════════════
-  // FIX (Problem 1): Single, guarded auth subscription.
-  // Replaces the previous two onAuthStateChange effects.
-  // ══════════════════════════════════════════════════
   useEffect(() => {
     let cancelled = false;
     let lastUserId = null;
 
-    // ── Initial session ────────────────────────────────
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (cancelled) return;
       const u = session?.user ?? null;
@@ -248,25 +234,19 @@ function App(){
       }
     });
 
-    // ── One subscription, guarded ──────────────────────
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (cancelled) return;
 
-      // Handle password-recovery links
       if (event === 'PASSWORD_RECOVERY') {
         setResetPasswordOpen(true);
         return;
       }
 
-      // Token refresh / initial session → identity unchanged.
-      // DO NOT refetch meta here — this is what was wiping the
-      // ForcePasswordChange card and logging staff out.
       if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
         if (session?.user) setUser(session.user);
         return;
       }
 
-      // Real sign-in
       if (event === 'SIGNED_IN' && session?.user) {
         const uid = session.user.id;
         setUser(session.user);
@@ -277,19 +257,15 @@ function App(){
         return;
       }
 
-      // Real sign-out — but verify before trusting it.
       if (event === 'SIGNED_OUT') {
         supabase.auth.getSession().then(({ data: { session: s } }) => {
           if (cancelled) return;
 
-          // Spurious SIGNED_OUT during a token-refresh race:
-          // the session is still there → ignore the event.
           if (s?.user) {
             setUser(s.user);
             return;
           }
 
-          // Genuine sign-out.
           lastUserId = null;
           setUser(null);
           setMeta(null);
@@ -313,11 +289,6 @@ function App(){
     return () => window.removeEventListener('openLogin', handler);
   }, []);
 
-  // ══════════════════════════════════════════════════
-  // FIX (Problem 2): Latch the ForcePasswordChange screen.
-  // Once shown, it stays shown until password is changed
-  // or the user logs out.
-  // ══════════════════════════════════════════════════
   useEffect(() => {
     if (!user) {
       setForceChangeLatched(false);
@@ -710,7 +681,6 @@ function App(){
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return error.message;
 
-    // Diagnostic: warn about duplicate meta rows
     try {
       const uid = data?.user?.id;
       if (uid) {
@@ -731,10 +701,6 @@ function App(){
     return null;
   }
 
-  // ══════════════════════════════════════════════════
-  // FIX: Harden logout() — clear local state first,
-  // and reset the ForcePasswordChange latch.
-  // ══════════════════════════════════════════════════
   async function logout() {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -742,8 +708,6 @@ function App(){
 
     localStorage.removeItem('activeExam');
 
-    // Clear local state BEFORE async signOut so the UI
-    // responds immediately even if signOut is slow.
     setUser(null);
     setMeta(null);
     setProfilePic(null);
@@ -761,10 +725,6 @@ function App(){
     navigate("homepage");
   }
 
-  // ══════════════════════════════════════════════════
-  // FIX (Problem 2): Render guard uses the latch so the
-  // card can't unmount from a transient meta blip.
-  // ══════════════════════════════════════════════════
   if (user && forceChangeLatched) {
     return (
       <ForcePasswordChange
@@ -4175,9 +4135,6 @@ function ExamSystem({ user, meta }) {
   const isStaff = meta?.role === 'staff';
   const isStudent = meta?.role === 'student';
 
-  // ============================================
-  // NOT LOGGED IN → show login prompt
-  // ============================================
   if (!user || !meta) {
     return (
       <div style={{
@@ -4713,6 +4670,16 @@ function ExamSystem({ user, meta }) {
         lastTick: now
       }));
 
+      // ⚠️ FULLSCREEN FIX: requestFullscreen() must run while the click
+      // gesture is still active. Any blocking alert() before it kills the
+      // gesture and makes the browser silently reject the request.
+      try {
+        const el = document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+        else if (el.msRequestFullscreen) await el.msRequestFullscreen();
+      } catch (e) { console.warn('FS failed:', e); }
+
       alert(
         '📋 Exam Rules:\n\n' +
         '• Fullscreen mode will be enforced\n' +
@@ -4723,12 +4690,6 @@ function ExamSystem({ user, meta }) {
         '⚠️ Leaving the exam page (even to browse other parts of this site) still counts time against you and logs violations.\n\n' +
         'Click OK to start.'
       );
-
-      try {
-        const el = document.documentElement;
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
-      } catch (e) { console.warn('FS failed:', e); }
 
       await supabase.from('exam_progress').insert([newRow]);
     }
@@ -4934,9 +4895,6 @@ function ExamSystem({ user, meta }) {
     });
   };
 
-  // ============================================
-  // EXAM PAGE — NEW LAYOUT (matches the image)
-  // ============================================
   if (currentExam && isStudent && !submitted) {
     const q = currentExam.questions[qIndex];
     const totalQuestions = currentExam.questions.length;
@@ -4950,7 +4908,6 @@ function ExamSystem({ user, meta }) {
         borderRadius: '12px',
         fontFamily: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
       }}>
-        {/* Violations banner */}
         {violations > 0 && (
           <div style={{
             background: violations >= MAX_VIOLATIONS - 1 ? '#dc3545' : '#fff3cd',
@@ -4972,7 +4929,6 @@ function ExamSystem({ user, meta }) {
           </div>
         )}
 
-        {/* Header */}
         <div style={{ marginBottom: '8px' }}>
           <h1 style={{
             fontSize: '28px',
@@ -4986,7 +4942,6 @@ function ExamSystem({ user, meta }) {
           </h1>
         </div>
 
-        {/* Tabs */}
         <div style={{
           display: 'flex',
           gap: '32px',
@@ -5018,11 +4973,8 @@ function ExamSystem({ user, meta }) {
           </span>
         </div>
 
-        {/* Layout: main area + quiz navigation sidebar */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '30px', background: '#fff' }}>
-          {/* LEFT — Question area */}
           <div style={{ flex: '1 1 700px', minWidth: '500px' }}>
-            {/* Back button */}
             <button
               onClick={() => {
                 if (confirm('Leave exam? Your progress is saved. The timer will keep running.')) {
@@ -5048,9 +5000,7 @@ function ExamSystem({ user, meta }) {
               Back
             </button>
 
-            {/* Question meta + question */}
             <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              {/* Question meta (left column) */}
               <div style={{
                 background: '#f8fafc',
                 border: '1px solid #d6dee6',
@@ -5091,7 +5041,6 @@ function ExamSystem({ user, meta }) {
                 </div>
               </div>
 
-              {/* Question + choices */}
               <div style={{ flex: 1, minWidth: '280px' }}>
                 <div style={{
                   background: '#eef7fb',
@@ -5150,7 +5099,6 @@ function ExamSystem({ user, meta }) {
                   </div>
                 </div>
 
-                {/* Timer row */}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
                   <div style={{
                     backgroundColor: '#fce8e8',
@@ -5168,7 +5116,6 @@ function ExamSystem({ user, meta }) {
               </div>
             </div>
 
-            {/* Bottom navigation */}
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
@@ -5223,7 +5170,6 @@ function ExamSystem({ user, meta }) {
             </div>
           </div>
 
-          {/* RIGHT — Quiz navigation */}
           <div style={{
             flex: '0 0 300px',
             minWidth: '260px',
@@ -5276,7 +5222,6 @@ function ExamSystem({ user, meta }) {
                   position: 'relative'
                 };
 
-                // Answered questions → full dark black
                 if (isAnswered) {
                   btnStyle = {
                     ...btnStyle,
@@ -5287,7 +5232,6 @@ function ExamSystem({ user, meta }) {
                   };
                 }
 
-                // Current question → blue (overrides answered color)
                 if (isCurrent) {
                   btnStyle = {
                     ...btnStyle,
