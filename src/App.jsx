@@ -4118,6 +4118,9 @@ function ExamSystem({ user, meta }) {
   const [filterYear, setFilterYear] = useState('all');
   const [flaggedQuestions, setFlaggedQuestions] = useState(new Set());
 
+  // NEW: rules overlay state (replaces the alert that used to kill fullscreen)
+  const [showRules, setShowRules] = useState(false);
+
   const [violations, setViolations] = useState(0);
   const [violationLog, setViolationLog] = useState([]);
   const MAX_VIOLATIONS = 3;
@@ -4206,17 +4209,19 @@ function ExamSystem({ user, meta }) {
   useEffect(() => { qIndexRef.current = qIndex; }, [qIndex]);
   useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
 
-  const enterFullscreen = async () => {
+  // ══════════════════════════════════════════════════
+  // FULLSCREEN HELPERS
+  // ══════════════════════════════════════════════════
+  const enterFullscreenNow = () => {
+    const el = document.documentElement;
+    const fn =
+      el.requestFullscreen ||
+      el.webkitRequestFullscreen ||
+      el.msRequestFullscreen;
+    if (!fn) return;
     try {
-      const el = document.documentElement;
-      if (el.requestFullscreen) {
-        await el.requestFullscreen();
-      } else if (el.webkitRequestFullscreen) {
-        await el.webkitRequestFullscreen();
-      } else if (el.msRequestFullscreen) {
-        await el.msRequestFullscreen();
-      }
-      fullscreenRef.current = true;
+      const p = fn.call(el);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
     } catch (e) {
       console.warn('Fullscreen request failed:', e);
     }
@@ -4625,19 +4630,8 @@ function ExamSystem({ user, meta }) {
 
       setInProgressExams(prev => ({ ...prev, [exam.id]: data }));
 
-      try {
-        const el = document.documentElement;
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
-      } catch (e) { console.warn('FS failed:', e); }
-
-      alert(
-        '▶️ Continuing your exam.\n\n' +
-        `⏱️ Time remaining: ${Math.floor(remaining / 60)}m ${remaining % 60}s\n` +
-        `❓ Question ${(data.current_index || 0) + 1} of ${exam.questions.length}\n` +
-        (priorViolations > 0 ? `⚠️ Violations so far: ${priorViolations}/${MAX_VIOLATIONS}\n` : '') +
-        '\nFullscreen will be enforced again.'
-      );
+      // Show rules overlay — never alert() while in fullscreen
+      setShowRules(true);
     } else {
       setAnswers({});
       setQIndex(0);
@@ -4670,26 +4664,8 @@ function ExamSystem({ user, meta }) {
         lastTick: now
       }));
 
-      // ⚠️ FULLSCREEN FIX: requestFullscreen() must run while the click
-      // gesture is still active. Any blocking alert() before it kills the
-      // gesture and makes the browser silently reject the request.
-      try {
-        const el = document.documentElement;
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
-        else if (el.msRequestFullscreen) await el.msRequestFullscreen();
-      } catch (e) { console.warn('FS failed:', e); }
-
-      alert(
-        '📋 Exam Rules:\n\n' +
-        '• Fullscreen mode will be enforced\n' +
-        '• Tab switching will be logged\n' +
-        '• Copy/paste is disabled\n' +
-        `• ${MAX_VIOLATIONS} violations = auto-submit\n` +
-        '• Your progress is saved every 5 seconds — you can safely pause and resume\n' +
-        '⚠️ Leaving the exam page (even to browse other parts of this site) still counts time against you and logs violations.\n\n' +
-        'Click OK to start.'
-      );
+      // Show rules overlay — never alert() while in fullscreen
+      setShowRules(true);
 
       await supabase.from('exam_progress').insert([newRow]);
     }
@@ -4908,6 +4884,53 @@ function ExamSystem({ user, meta }) {
         borderRadius: '12px',
         fontFamily: "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
       }}>
+        {/* Rules overlay — replaces alert() so fullscreen is preserved */}
+        {showRules && (
+          <div style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(5,19,32,0.85)',
+            zIndex: 99999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px'
+          }}>
+            <div style={{
+              background: 'white',
+              borderRadius: '14px',
+              padding: '32px',
+              maxWidth: '520px',
+              width: '100%',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.4)'
+            }}>
+              <h2 style={{ margin: '0 0 12px', color: '#102a43' }}>
+                📋 Exam Rules
+              </h2>
+              <ul style={{
+                paddingLeft: '20px', margin: '0 0 20px',
+                color: '#333', fontSize: '14px', lineHeight: '1.8'
+              }}>
+                <li>Fullscreen mode is enforced</li>
+                <li>Tab switching will be logged</li>
+                <li>Copy/paste is disabled</li>
+                <li><strong>{MAX_VIOLATIONS} violations = auto-submit</strong></li>
+                <li>Your progress is saved every 5 seconds — you can pause and resume</li>
+                <li>Leaving the exam page still counts time against you and logs violations</li>
+              </ul>
+              <button
+                onClick={() => setShowRules(false)}
+                style={{
+                  background: '#28a745', color: 'white',
+                  border: 'none', padding: '12px 32px',
+                  borderRadius: '8px', fontWeight: '700',
+                  fontSize: '15px', cursor: 'pointer',
+                  width: '100%'
+                }}
+              >
+                ✅ I Understand — Start Exam
+              </button>
+            </div>
+          </div>
+        )}
+
         {violations > 0 && (
           <div style={{
             background: violations >= MAX_VIOLATIONS - 1 ? '#dc3545' : '#fff3cd',
@@ -5668,7 +5691,10 @@ Answer: C`
 
                 <button
                   className="primary"
-                  onClick={() => startExam(e, isResuming)}
+                  onClick={() => {
+                    enterFullscreenNow();
+                    startExam(e, isResuming);
+                  }}
                   style={{
                     marginTop: '8px',
                     background: isResuming ? '#e1b84b' : undefined,
